@@ -1,0 +1,170 @@
+from flask import Flask, request, render_template_string, redirect
+import sqlite3, requests, datetime
+
+app = Flask(__name__)
+
+TOKEN = "YOUR_BOT_TOKEN"
+
+# ================= DATABASE =================
+def db():
+    conn = sqlite3.connect("data.db", check_same_thread=False)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tg_id TEXT,
+        name TEXT,
+        phone TEXT,
+        amount TEXT,
+        status TEXT,
+        response TEXT,
+        date TEXT
+    )
+    """)
+    return conn
+
+conn = db()
+
+# ================= TELEGRAM BOT =================
+def send_msg(chat_id, text):
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                 params={"chat_id": chat_id, "text": text})
+
+user_step = {}
+
+@app.route("/bot", methods=["POST"])
+def bot():
+    data = request.json
+    msg = data.get("message", {})
+    chat_id = msg.get("chat", {}).get("id")
+    text = msg.get("text", "")
+
+    if not chat_id:
+        return "ok"
+
+    if text == "/start":
+        user_step[chat_id] = "name"
+        send_msg(chat_id, "🙏 Welcome Sir\nPlease enter your name:")
+    
+    elif user_step.get(chat_id) == "name":
+        user_step[chat_id] = {"name": text}
+        send_msg(chat_id, "Enter your phone number:")
+
+    elif isinstance(user_step.get(chat_id), dict) and "phone" not in user_step[chat_id]:
+        user_step[chat_id]["phone"] = text
+        send_msg(chat_id, "Enter amount:")
+    
+    elif isinstance(user_step.get(chat_id), dict) and "amount" not in user_step[chat_id]:
+        user_step[chat_id]["amount"] = text
+
+        data = user_step[chat_id]
+
+        conn.execute("INSERT INTO users (tg_id,name,phone,amount,status,date) VALUES (?,?,?,?,?,?)",
+                     (chat_id, data["name"], data["phone"], data["amount"], "pending", str(datetime.date.today())))
+        conn.commit()
+
+        send_msg(chat_id, "✅ Request submitted. Please wait.")
+        user_step.pop(chat_id)
+
+    return "ok"
+
+# ================= ADMIN PANEL =================
+BASE = """
+<html>
+<body style='background:#0b0b0b;color:white;font-family:sans-serif'>
+<h2>ADMIN PANEL</h2>
+<a href="/admin">Dashboard</a> | <a href="/admin/requests">Requests</a>
+
+<div>{{content}}</div>
+</body>
+</html>
+"""
+
+@app.route("/admin")
+def dash():
+    today = str(datetime.date.today())
+
+    total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    today_count = conn.execute("SELECT COUNT(*) FROM users WHERE date=?", (today,)).fetchone()[0]
+
+    html = f"""
+    <h3>Total Users: {total}</h3>
+    <h3>Today Requests: {today_count}</h3>
+    """
+
+    return render_template_string(BASE, content=html)
+
+@app.route("/admin/requests")
+def req():
+    users = conn.execute("SELECT * FROM users").fetchall()
+
+    rows = ""
+    for u in users:
+        if u[5] == "pending":
+            action = f"""
+            <a href='/accept/{u[0]}'>Accept</a> |
+            <a href='/decline/{u[0]}'>Decline</a>
+            """
+        elif u[5] == "accepted" and not u[6]:
+            action = f"""
+            <form action='/send/{u[0]}' method='post'>
+            <input name='msg' placeholder='Send response'>
+            <button>Send</button>
+            </form>
+            """
+        else:
+            action = "Done"
+
+        rows += f"""
+        <tr>
+        <td>{u[2]}</td>
+        <td>{u[4]}</td>
+        <td>{u[5]}</td>
+        <td>{action}</td>
+        </tr>
+        """
+
+    html = f"""
+    <table border=1>
+    <tr><th>Name</th><th>Amount</th><th>Status</th><th>Action</th></tr>
+    {rows}
+    </table>
+    """
+
+    return render_template_string(BASE, content=html)
+
+@app.route("/accept/<id>")
+def accept(id):
+    user = conn.execute("SELECT tg_id FROM users WHERE id=?", (id,)).fetchone()
+    conn.execute("UPDATE users SET status='accepted' WHERE id=?", (id,))
+    conn.commit()
+
+    send_msg(user[0], "✅ Approved. Please wait for response.")
+
+    return redirect("/admin/requests")
+
+@app.route("/decline/<id>")
+def decline(id):
+    user = conn.execute("SELECT tg_id FROM users WHERE id=?", (id,)).fetchone()
+    conn.
+execute("UPDATE users SET status='declined' WHERE id=?", (id,))
+    conn.commit()
+
+    send_msg(user[0], "❌ Request declined.")
+
+    return redirect("/admin/requests")
+
+@app.route("/send/<id>", methods=["POST"])
+def send(id):
+    msg = request.form.get("msg")
+
+    user = conn.execute("SELECT tg_id FROM users WHERE id=?", (id,)).fetchone()
+    conn.execute("UPDATE users SET response=? WHERE id=?", (msg, id))
+    conn.commit()
+
+    send_msg(user[0], f"📩 {msg}")
+
+    return redirect("/admin/requests")
+
+# ================= RUN =================
+if name == "__main__":
+    app.run(host="0.0.0.0", port=5000)
