@@ -48,6 +48,13 @@ def init_db():
             upi TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS subadmins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     try:
         conn.execute("ALTER TABLE users ADD COLUMN id_pass TEXT")
     except Exception:
@@ -252,6 +259,7 @@ function go(u){ location.href = u; }
   <a href="/admin/registrations" class="{{ 'active' if active == 'registrations' else '' }}">👤 Registrations</a>
   <a href="/admin/deposits" class="{{ 'active' if active == 'deposits' else '' }}">💰 Deposits</a>
   <a href="/admin/payments" class="{{ 'active' if active == 'payments' else '' }}">💳 Payments</a>
+  <a href="/admin/subusers" class="{{ 'active' if active == 'subusers' else '' }}">👥 Sub Users</a>
   <a href="/admin/settings" class="{{ 'active' if active == 'settings' else '' }}">⚙ Settings</a>
   <div class="spacer"></div>
   <a href="/admin/logout" class="logout">🚪 Logout</a>
@@ -414,12 +422,11 @@ def payments():
     cards = ""
     for u in users:
         idpass_html = f'<div class="idpass-sent">🎯 ID Sent: <strong>{u["id_pass"]}</strong></div>' if u["id_pass"] else ""
-        action_html = ""
+
         if u["status"] == "pending":
             action_html = f"""
 <div class="req-actions">
   <form method="post" action="/admin/accept/{u['id']}">
-    <input type="text" name="idpass" placeholder="Enter ID & Password" required autocomplete="off" style="width:200px">
     <button type="submit" class="btn green">✅ Accept</button>
   </form>
   <form method="post" action="/admin/decline/{u['id']}">
@@ -427,6 +434,18 @@ def payments():
   </form>
 </div>
 """
+        elif u["status"] == "accepted" and not u["id_pass"]:
+            action_html = f"""
+<div class="req-actions" style="margin-top:10px">
+  <form method="post" action="/admin/sendid/{u['id']}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <input type="text" name="idpass" placeholder="Enter ID & Password to send" required autocomplete="off" style="flex:1;min-width:200px">
+    <button type="submit" class="btn green">🎯 Send ID</button>
+  </form>
+</div>
+"""
+        else:
+            action_html = ""
+
         cards += f"""
 <div class="req-card">
   <div class="req-card-header">
@@ -507,11 +526,6 @@ def update_upi():
 @app.route("/admin/accept/<int:req_id>", methods=["POST"])
 @login_required
 def accept(req_id):
-    idpass = request.form.get("idpass", "").strip()
-    if not idpass:
-        flash("Please enter the ID & Password before accepting.", "error")
-        return redirect("/admin/payments?f=pending")
-
     db = get_db()
     row = db.execute("SELECT * FROM users WHERE id=?", (req_id,)).fetchone()
     if not row:
@@ -521,16 +535,38 @@ def accept(req_id):
         flash(f"Request #{req_id} is already {row['status']}.", "error")
         return redirect("/admin/payments")
 
-    db.execute("UPDATE users SET status='accepted', id_pass=? WHERE id=?", (idpass, req_id))
+    db.execute("UPDATE users SET status='accepted' WHERE id=?", (req_id,))
+    db.commit()
+
+    send_telegram(row["telegram_id"], "✅ Sir, Payment Received!\nPlease wait 5 minutes for your ID.")
+
+    flash(f"✅ Request #{req_id} accepted — now send the ID from the Accepted tab.")
+    return redirect("/admin/payments?f=accepted")
+
+
+@app.route("/admin/sendid/<int:req_id>", methods=["POST"])
+@login_required
+def sendid(req_id):
+    idpass = request.form.get("idpass", "").strip()
+    if not idpass:
+        flash("Please enter the ID & Password.", "error")
+        return redirect("/admin/payments?f=accepted")
+
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE id=?", (req_id,)).fetchone()
+    if not row:
+        flash("Request not found.", "error")
+        return redirect("/admin/payments?f=accepted")
+
+    db.execute("UPDATE users SET id_pass=? WHERE id=?", (idpass, req_id))
     db.commit()
 
     chat_id = row["telegram_id"]
-    send_telegram(chat_id, "✅ Sir, Payment Received!\nPlease wait 5 minutes.")
     send_telegram(chat_id, f"🎯 Sir, Your ID & Password:\n`{idpass}`")
     send_telegram(chat_id, "🔴 *LASER247 OFFICIAL SERVICE* 🔴")
 
-    flash(f"✅ Request #{req_id} accepted — ID sent to user on Telegram.")
-    return redirect("/admin/payments?f=pending")
+    flash(f"🎯 ID sent to user for request #{req_id}.")
+    return redirect("/admin/payments?f=accepted")
 
 
 @app.route("/admin/decline/<int:req_id>", methods=["POST"])
@@ -555,6 +591,64 @@ def decline(req_id):
 
     flash(f"❌ Request #{req_id} declined and user notified.")
     return redirect("/admin/payments?f=pending")
+
+
+@app.route("/admin/subusers", methods=["GET", "POST"])
+@login_required
+def subusers():
+    db = get_db()
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add":
+            name = request.form.get("name", "").strip()
+            if name:
+                db.execute("INSERT INTO subadmins (name) VALUES (?)", (name,))
+                db.commit()
+                flash(f"✅ Sub user '{name}' added.")
+        elif action == "delete":
+            uid = request.form.get("uid")
+            db.execute("DELETE FROM subadmins WHERE id=?", (uid,))
+            db.commit()
+            flash("🗑️ Sub user removed.")
+        return redirect("/admin/subusers")
+
+    rows = db.execute("SELECT * FROM subadmins ORDER BY id DESC").fetchall()
+
+    rows_html = "".join([
+        f"""<tr>
+          <td>#{r['id']}</td>
+          <td>{r['name']}</td>
+          <td style='color:#555;font-size:0.82rem'>{str(r['created_at'])[:16]}</td>
+          <td>
+            <form method='post' style='display:inline'>
+              <input type='hidden' name='action' value='delete'>
+              <input type='hidden' name='uid' value='{r["id"]}'>
+              <button class='btn' style='font-size:0.78rem;padding:4px 10px'>🗑️ Remove</button>
+            </form>
+          </td>
+        </tr>"""
+        for r in rows
+    ]) or "<tr><td colspan='4' style='color:#555;text-align:center'>No sub users added yet</td></tr>"
+
+    content = f"""
+<div style="max-width:600px">
+  <div style="background:#111;border:1px solid #1f1f1f;border-radius:10px;padding:20px;margin-bottom:20px">
+    <div style="color:#ff3b3b;font-weight:bold;margin-bottom:14px">➕ Add Sub User</div>
+    <form method="post" style="display:flex;gap:10px;align-items:center">
+      <input type="hidden" name="action" value="add">
+      <input type="text" name="name" placeholder="Enter sub user name" required autocomplete="off" style="flex:1">
+      <button class="btn">Add</button>
+    </form>
+  </div>
+
+  <table>
+    <tr><th>#</th><th>Name</th><th>Added</th><th>Action</th></tr>
+    {rows_html}
+  </table>
+</div>
+"""
+    return render_template_string(BASE_HTML, page_title="Sub Users", active="subusers", content=content)
 
 
 if __name__ == "__main__":

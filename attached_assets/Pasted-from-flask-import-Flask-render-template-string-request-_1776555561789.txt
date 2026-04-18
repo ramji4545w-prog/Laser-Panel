@@ -1,0 +1,227 @@
+from flask import Flask, render_template_string, request, redirect
+import sqlite3, requests, datetime
+
+app = Flask(__name__)
+
+TOKEN = "YOUR_BOT_TOKEN"
+
+# ================= DATABASE =================
+def db():
+    conn = sqlite3.connect("database.db")
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        amount TEXT,
+        utr TEXT,
+        status TEXT,
+        telegram_id TEXT,
+        id_pass TEXT,
+        date TEXT
+    )
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS settings(
+        id INTEGER PRIMARY KEY,
+        upi TEXT
+    )
+    """)
+    conn.execute("INSERT OR IGNORE INTO settings (id, upi) VALUES (1, 'demo@upi')")
+    return conn
+
+# ================= UI =================
+BASE = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>ADMIN PRO</title>
+<style>
+body{margin:0;background:#0b0b0b;color:white;font-family:Segoe UI;display:flex}
+.sidebar{width:220px;background:#111;height:100vh;padding:15px}
+.sidebar a{display:block;color:#ccc;padding:10px;text-decoration:none}
+.sidebar a:hover{background:red;color:white}
+.main{flex:1;padding:20px}
+.card{background:#111;padding:15px;border-radius:10px;margin:10px;display:inline-block;width:22%;text-align:center}
+.btn{background:red;color:white;border:none;padding:6px 10px;margin:2px;cursor:pointer}
+input{padding:5px}
+table{width:100%;margin-top:15px;border-collapse:collapse}
+th,td{padding:10px;border-bottom:1px solid #333}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+<h3>🔥 ADMIN</h3>
+<a href="/admin">Dashboard</a>
+<a href="/admin/payments">Payments</a>
+<a href="/admin/users">Sub Users</a>
+<a href="/admin/settings">Settings</a>
+</div>
+
+<div class="main">
+{{content}}
+</div>
+
+</body>
+</html>
+"""
+
+# ================= DASHBOARD =================
+@app.route("/admin")
+def dashboard():
+    conn = db()
+    today = datetime.date.today().isoformat()
+
+    total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    today_reg = conn.execute("SELECT COUNT(*) FROM users WHERE date=?", (today,)).fetchone()[0]
+    total_dep = conn.execute("SELECT SUM(amount) FROM users WHERE status='accepted'").fetchone()[0] or 0
+    today_dep = conn.execute("SELECT SUM(amount) FROM users WHERE status='accepted' AND date=?", (today,)).fetchone()[0] or 0
+
+    html = f"""
+    <h2>Dashboard</h2>
+    <div class='card'>Today Registration<br>{today_reg}</div>
+    <div class='card'>Today Deposit<br>₹{today_dep}</div>
+    <div class='card'>Total Users<br>{total}</div>
+    <div class='card'>Total Deposit<br>₹{total_dep}</div>
+    """
+
+    return render_template_string(BASE, content=html)
+
+# ================= PAYMENTS =================
+@app.route("/admin/payments")
+def payments():
+    conn = db()
+    users = conn.execute("SELECT * FROM users").fetchall()
+
+    rows = ""
+    for u in users:
+        if u[4] == "pending":
+            action = f"""
+            <a href='/accept/{u[0]}'><button class='btn'>Accept</button></a>
+            <a href='/decline/{u[0]}'><button class='btn'>Decline</button></a>
+            """
+        elif u[4] == "accepted" and not u[6]:
+            action = f"""
+            <form action='/sendid/{u[0]}' method='post'>
+            <input name='idpass' placeholder='Enter ID'>
+            <button class='btn'>Send ID</button>
+            </form>
+            """
+        else:
+            action = "✅ Done"
+
+        rows += f"""
+        <tr>
+        <td>{u[1]}</td>
+        <td>₹{u[2]}</td>
+        <td>{u[3]}</td>
+        <td>{u[4]}</td>
+        <td>{action}</td>
+        </tr>
+        """
+
+    html = f"""
+    <h2>Payments</h2>
+    <table>
+    <tr><th>Name</th><th>Amount</th><th>UTR</th><th>Status</th><th>Action</th></tr>
+    {rows}
+    </table>
+    """
+
+    return render_template_string(BASE, content=html)
+
+# ================= ACCEPT =================
+@app.route("/accept/<id>")
+def accept(id):
+    conn = db()
+    user = conn.execute("SELECT telegram_id FROM users WHERE id=?", (id,)).fetchone()
+
+    conn.execute("UPDATE users SET status='accepted' WHERE id=?", (id,))
+    conn.commit()
+
+    if user:
+requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={user[0]}&text=✅ Payment Received Sir")
+
+    return redirect("/admin/payments")
+
+# ================= DECLINE =================
+@app.route("/decline/<id>")
+def decline(id):
+    conn = db()
+    user = conn.execute("SELECT telegram_id FROM users WHERE id=?", (id,)).fetchone()
+
+    conn.execute("UPDATE users SET status='declined' WHERE id=?", (id,))
+    conn.commit()
+
+    if user:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={user[0]}&text=❌ Payment Not Received")
+
+    return redirect("/admin/payments")
+
+# ================= SEND ID =================
+@app.route("/sendid/<id>", methods=["POST"])
+def sendid(id):
+    idpass = request.form.get("idpass")
+
+    conn = db()
+    user = conn.execute("SELECT telegram_id FROM users WHERE id=?", (id,)).fetchone()
+
+    conn.execute("UPDATE users SET id_pass=? WHERE id=?", (idpass, id))
+    conn.commit()
+
+    if user:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={user[0]}&text=🎯 ID:\\n{idpass}")
+
+    return redirect("/admin/payments")
+
+# ================= SUB USERS =================
+@app.route("/admin/users", methods=["GET","POST"])
+def subusers():
+    conn = db()
+
+    if request.method == "POST":
+        name = request.form.get("name")
+        conn.execute("INSERT INTO users (name,status,date) VALUES (?,?,?)", (name,"sub",str(datetime.date.today())))
+        conn.commit()
+
+    users = conn.execute("SELECT name FROM users WHERE status='sub'").fetchall()
+
+    rows = "".join([f"<li>{u[0]}</li>" for u in users])
+
+    html = f"""
+    <h2>Sub Users</h2>
+    <form method='post'>
+    <input name='name' placeholder='Enter Name'>
+    <button class='btn'>Add</button>
+    </form>
+    <ul>{rows}</ul>
+    """
+
+    return render_template_string(BASE, content=html)
+
+# ================= SETTINGS =================
+@app.route("/admin/settings", methods=["GET","POST"])
+def settings():
+    conn = db()
+
+    if request.method == "POST":
+        upi = request.form.get("upi")
+        conn.execute("UPDATE settings SET upi=? WHERE id=1", (upi,))
+        conn.commit()
+
+    upi = conn.execute("SELECT upi FROM settings WHERE id=1").fetchone()[0]
+
+    html = f"""
+    <h2>Settings</h2>
+    Current UPI: {upi}<br><br>
+    <form method='post'>
+    <input name='upi' placeholder='New UPI'>
+    <button class='btn'>Update</button>
+    </form>
+    """
+
+    return render_template_string(BASE, content=html)
+
+# ================= RUN =================
+if name == "__main__":
+    app.run(host="0.0.0.0", port=5000)
