@@ -1,0 +1,202 @@
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>🔥 Admin Panel</title>
+
+<style>
+body {
+    background: #0a0a0a;
+    color: white;
+    font-family: 'Segoe UI', sans-serif;
+    margin: 0;
+}
+
+/* HEADER */
+.header {
+    padding: 20px;
+    font-size: 28px;
+    color: red;
+    border-bottom: 1px solid #222;
+    text-align: center;
+}
+
+/* DASHBOARD CARDS */
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    padding: 20px;
+}
+
+.card {
+    background: #111;
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid #222;
+    text-align: center;
+    transition: 0.3s;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+    border-color: red;
+    box-shadow: 0 0 15px red;
+}
+
+.card h2 {
+    color: red;
+    margin: 10px 0;
+}
+
+/* CONTAINER */
+.container {
+    padding: 20px;
+}
+
+/* BOX */
+.box {
+    background: #111;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 12px;
+    border: 1px solid #222;
+    transition: 0.3s;
+}
+
+.box:hover {
+    border-color: red;
+    box-shadow: 0 0 10px red;
+}
+
+/* TEXT */
+.title {
+    color: red;
+    margin-bottom: 10px;
+}
+
+/* BUTTON */
+button {
+    background: linear-gradient(45deg, red, darkred);
+    color: white;
+    border: none;
+    padding: 10px 15px;
+    margin-top: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: 0.3s;
+}
+
+button:hover {
+    transform: scale(1.05);
+    box-shadow: 0 0 10px red;
+}
+
+/* INPUT */
+input {
+    width: 100%;
+    padding: 10px;
+    margin-top: 8px;
+    border-radius: 8px;
+    border: none;
+    background: #222;
+    color: white;
+}
+
+/* IMAGE */
+img {
+    border-radius: 10px;
+    margin-top: 10px;
+    border: 1px solid red;
+}
+
+/* GRID FOR USER BOX */
+.user-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+/* MOBILE */
+@media(max-width:600px){
+    .user-grid {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="header">🔥 ADMIN DASHBOARD</div>
+
+<div class="cards">
+    <div class="card">
+        <div>Today Registration</div>
+        <h2>{{today_reg}}</h2>
+    </div>
+
+    <div class="card">
+        <div>Today Deposit</div>
+        <h2>₹{{today_dep}}</h2>
+    </div>
+
+    <div class="card">
+        <div>Total Users</div>
+        <h2>{{total_users}}</h2>
+    </div>
+
+    <div class="card">
+        <div>Total Deposit</div>
+        <h2>₹{{total_dep}}</h2>
+    </div>
+</div>
+
+<div class="container">
+
+<!-- UPI BOX -->
+<div class="box">
+    <div class="title">💳 Change UPI</div>
+    <form method="post" action="/upi">
+        <input type="text" name="upi" placeholder="Enter new UPI ID" required>
+        <button>Update UPI</button>
+    </form>
+</div>
+
+<!-- USERS -->
+{% for u in users %}
+<div class="box">
+
+<div class="title">💰 Payment Request</div>
+
+<div class="user-grid">
+    <div>👤 {{u[1]}}</div>
+    <div>📱 {{u[2]}}</div>
+    <div>🌐 {{u[3]}}</div>
+    <div>💰 ₹{{u[4]}}</div>
+</div>
+
+<p>🔢 UTR: {{u[6]}}</p>
+
+{% if u[7] %}
+<img src="{{u[7]}}" width="220">
+{% endif %}
+
+<form method="post" action="/accept/{{u[0]}}">
+    <input type="text" name="idpass" placeholder="Enter ID & Password" required>
+    <button>✅ Accept</button>
+</form>
+
+<form method="post" action="/decline/{{u[0]}}">
+    <button>❌ Decline</button>
+</form>
+
+</div>
+{% endfor %}
+
+</div>
+
+</body>
+</html>
+"""

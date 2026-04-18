@@ -138,101 +138,174 @@ MAIN_HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin Panel</title>
+<title>🔥 Admin Panel</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d0d0d; color: #f0f0f0; font-family: 'Segoe UI', Arial, sans-serif; min-height: 100vh; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    background: #0a0a0a;
+    color: white;
+    font-family: 'Segoe UI', sans-serif;
+}
 
-  header {
-    background: linear-gradient(135deg, #1a0000, #3d0000);
-    border-bottom: 2px solid #cc0000;
-    padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
-  }
-  header h1 { font-size: 1.4rem; color: #ff4444; letter-spacing: 1px; }
-  .logout-btn {
-    background: #1a1a1a; color: #888; border: 1px solid #333;
-    border-radius: 6px; padding: 6px 14px; font-size: 0.78rem; cursor: pointer;
-    text-decoration: none; transition: all 0.15s;
-  }
-  .logout-btn:hover { color: #ff4444; border-color: #cc0000; }
+.header {
+    padding: 18px 20px;
+    font-size: 26px;
+    color: red;
+    border-bottom: 1px solid #222;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.logout-btn {
+    font-size: 13px;
+    color: #888;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 6px 14px;
+    text-decoration: none;
+    transition: 0.2s;
+}
+.logout-btn:hover { color: red; border-color: red; }
 
-  .stats-bar { display: flex; gap: 12px; padding: 18px 24px; flex-wrap: wrap; }
-  .stat {
-    background: #111; border: 1px solid #222; border-radius: 8px;
-    padding: 14px 18px; flex: 1; min-width: 110px; text-align: center;
-  }
-  .stat .num { font-size: 1.7rem; font-weight: bold; }
-  .stat .label { font-size: 0.72rem; color: #777; margin-top: 3px; text-transform: uppercase; letter-spacing: 1px; }
-  .stat.today-reg .num { color: #4a90e2; }
-  .stat.today-dep .num { color: #27ae60; }
-  .stat.total-u .num { color: #f5a623; }
-  .stat.total-dep .num { color: #cc0000; }
+.flash { background: #0d2d1a; border-left: 3px solid #27ae60; color: #27ae60; padding: 10px 20px; font-size: 0.85rem; }
+.flash.err { background: #2d0000; border-left-color: red; color: #ff6666; }
 
-  .upi-bar {
-    background: #111; border: 1px solid #333; border-radius: 8px;
-    margin: 0 24px 18px; padding: 14px 18px; display: flex; align-items: center; gap: 12px;
-  }
-  .upi-bar label { font-size: 0.78rem; color: #666; text-transform: uppercase; letter-spacing: 1px; white-space: nowrap; }
-  .upi-bar input {
-    flex: 1; background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
-    color: #f0f0f0; font-size: 0.9rem; padding: 8px 12px; outline: none;
-  }
-  .upi-bar input:focus { border-color: #cc0000; }
-  .upi-bar button { background: #cc0000; color: white; border: none; border-radius: 6px; padding: 8px 18px; font-size: 0.85rem; font-weight: bold; cursor: pointer; white-space: nowrap; }
-  .upi-bar .current-upi { font-size: 0.8rem; color: #555; }
-  .upi-bar .current-upi span { color: #f5a623; }
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    padding: 20px;
+}
+.card {
+    background: #111;
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid #222;
+    text-align: center;
+    transition: 0.3s;
+}
+.card:hover {
+    transform: translateY(-5px);
+    border-color: red;
+    box-shadow: 0 0 15px red;
+}
+.card .label { font-size: 0.82rem; color: #888; margin-bottom: 6px; }
+.card h2 { color: red; font-size: 1.8rem; margin: 6px 0; }
 
-  .tabs { display: flex; padding: 0 24px; border-bottom: 1px solid #1a1a1a; }
-  .tab { padding: 10px 18px; font-size: 0.82rem; text-decoration: none; color: #555; border-bottom: 2px solid transparent; transition: all 0.15s; }
-  .tab.active { color: #ff4444; border-bottom-color: #cc0000; }
-  .tab:hover { color: #ccc; }
+.container { padding: 0 20px 30px; }
 
-  .section-title { padding: 10px 24px; font-size: 0.8rem; color: #444; text-transform: uppercase; letter-spacing: 2px; border-bottom: 1px solid #1a1a1a; }
+.box {
+    background: #111;
+    padding: 20px;
+    margin-bottom: 18px;
+    border-radius: 12px;
+    border: 1px solid #222;
+    transition: 0.3s;
+}
+.box:hover {
+    border-color: red;
+    box-shadow: 0 0 10px red;
+}
 
-  .flash { background: #1a3320; border: 1px solid #27ae60; color: #27ae60; padding: 10px 24px; font-size: 0.85rem; }
-  .flash.err { background: #2d0000; border-color: #cc0000; color: #cc0000; }
+.title { color: red; margin-bottom: 12px; font-size: 1rem; font-weight: bold; }
 
-  .cards { padding: 18px 24px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
-  .card {
-    background: #111; border: 1px solid #222; border-left: 4px solid #cc0000;
-    border-radius: 8px; padding: 16px; transition: border-color 0.2s;
-  }
-  .card:hover { border-left-color: #ff4444; }
-  .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-  .req-id { font-size: 0.72rem; color: #555; background: #1a1a1a; padding: 3px 8px; border-radius: 4px; }
-  .badge { font-size: 0.68rem; padding: 3px 10px; border-radius: 12px; font-weight: bold; text-transform: uppercase; }
-  .badge.pending { background: #2d1f00; color: #f5a623; }
-  .badge.approved { background: #0d2d1a; color: #27ae60; }
-  .badge.rejected { background: #2d0000; color: #cc0000; }
-  .badge.accepted { background: #0d2d1a; color: #27ae60; }
-  .badge.declined { background: #2d0000; color: #cc0000; }
-  .user-name { font-size: 1rem; font-weight: bold; margin-bottom: 8px; color: #fff; }
-  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 12px; }
-  .info-item .key { color: #555; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; }
-  .info-item .val { color: #ccc; font-size: 0.82rem; margin-top: 1px; }
-  .amount-val { color: #27ae60 !important; font-weight: bold; }
-  .idpass-val { color: #4a90e2 !important; font-weight: bold; }
+.tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 20px;
+    border-bottom: 1px solid #1a1a1a;
+    margin-bottom: 18px;
+}
+.tab {
+    padding: 10px 18px;
+    font-size: 0.82rem;
+    text-decoration: none;
+    color: #555;
+    border-bottom: 2px solid transparent;
+    transition: 0.15s;
+}
+.tab.active { color: red; border-bottom-color: red; }
+.tab:hover { color: #ccc; }
 
-  .accept-form { margin-bottom: 8px; }
-  .accept-form input[type="text"] {
-    width: 100%; background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
-    color: #f0f0f0; font-size: 0.85rem; padding: 8px 10px; margin-bottom: 6px; outline: none;
-  }
-  .accept-form input:focus { border-color: #27ae60; }
-  .actions { display: flex; gap: 8px; }
-  .actions form { flex: 1; }
-  button.btn-approve { width: 100%; background: #27ae60; color: white; border: none; border-radius: 6px; padding: 9px; font-size: 0.85rem; font-weight: bold; cursor: pointer; }
-  button.btn-reject { width: 100%; background: #cc0000; color: white; border: none; border-radius: 6px; padding: 9px; font-size: 0.85rem; font-weight: bold; cursor: pointer; }
-  button:hover { opacity: 0.85; }
-  .empty { text-align: center; padding: 60px; color: #333; font-size: 1.1rem; }
+.section-label { padding: 0 20px 10px; font-size: 0.78rem; color: #444; text-transform: uppercase; letter-spacing: 2px; }
+
+button {
+    background: linear-gradient(45deg, red, darkred);
+    color: white;
+    border: none;
+    padding: 10px 15px;
+    margin-top: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: 0.3s;
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+button:hover {
+    transform: scale(1.05);
+    box-shadow: 0 0 10px red;
+}
+button.btn-approve {
+    background: linear-gradient(45deg, #27ae60, #1e8449);
+    width: 100%;
+}
+button.btn-approve:hover { box-shadow: 0 0 10px #27ae60; }
+button.btn-reject { width: 100%; }
+
+input[type="text"], input[type="password"] {
+    width: 100%;
+    padding: 10px;
+    margin-top: 8px;
+    border-radius: 8px;
+    border: 1px solid #333;
+    background: #222;
+    color: white;
+    font-size: 0.9rem;
+    outline: none;
+    transition: 0.2s;
+}
+input:focus { border-color: red; }
+
+.user-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 10px;
+    font-size: 0.9rem;
+    color: #ccc;
+}
+.user-grid .amount { color: #27ae60; font-weight: bold; }
+
+.badge { font-size: 0.7rem; padding: 3px 10px; border-radius: 10px; font-weight: bold; text-transform: uppercase; }
+.badge.pending { background: #2d1f00; color: #f5a623; }
+.badge.accepted { background: #0d2d1a; color: #27ae60; }
+.badge.declined { background: #2d0000; color: #ff6666; }
+.badge.approved { background: #0d2d1a; color: #27ae60; }
+.badge.rejected { background: #2d0000; color: #ff6666; }
+
+.req-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.req-id { font-size: 0.72rem; color: #555; background: #1a1a1a; padding: 3px 8px; border-radius: 4px; }
+
+.idpass-sent { color: #4a90e2; font-size: 0.85rem; margin: 6px 0; }
+
+.actions { display: flex; gap: 8px; }
+.actions form { flex: 1; }
+
+.empty { text-align: center; padding: 60px; color: #333; font-size: 1rem; }
+
+@media(max-width: 600px) {
+    .user-grid { grid-template-columns: 1fr; }
+    .cards { grid-template-columns: 1fr 1fr; }
+}
 </style>
 </head>
 <body>
 
-<header>
-  <h1>🔥 Admin Panel</h1>
+<div class="header">
+  🔥 ADMIN DASHBOARD
   <a class="logout-btn" href="/admin/logout">Logout</a>
-</header>
+</div>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% for cat, msg in messages %}
@@ -240,74 +313,78 @@ MAIN_HTML = """
   {% endfor %}
 {% endwith %}
 
-<div class="stats-bar">
-  <div class="stat today-reg"><div class="num">{{ stats.today_reg }}</div><div class="label">Today Reg</div></div>
-  <div class="stat today-dep"><div class="num">₹{{ stats.today_dep }}</div><div class="label">Today Deposit</div></div>
-  <div class="stat total-u"><div class="num">{{ stats.total_users }}</div><div class="label">Total Users</div></div>
-  <div class="stat total-dep"><div class="num">₹{{ stats.total_dep }}</div><div class="label">Total Deposit</div></div>
-</div>
-
-<div class="upi-bar">
-  <label>💳 UPI ID</label>
-  <span class="current-upi">Current: <span>{{ current_upi or 'Not set' }}</span></span>
-  <form method="post" action="/admin/upi" style="display:flex;gap:8px;flex:1">
-    <input type="text" name="upi" placeholder="Enter new UPI ID (e.g. name@upi)" autocomplete="off">
-    <button type="submit">Update</button>
-  </form>
-</div>
-
-<div class="tabs">
-  <a class="tab {% if filter == 'pending' %}active{% endif %}" href="/admin/?f=pending">⏳ Pending</a>
-  <a class="tab {% if filter == 'accepted' %}active{% endif %}" href="/admin/?f=accepted">✅ Accepted</a>
-  <a class="tab {% if filter == 'declined' %}active{% endif %}" href="/admin/?f=declined">❌ Declined</a>
-  <a class="tab {% if filter == 'all' %}active{% endif %}" href="/admin/?f=all">All</a>
-</div>
-
-<div class="section-title">{{ users|length }} request(s)</div>
-
-{% if users %}
 <div class="cards">
-  {% for u in users %}
-  <div class="card">
-    <div class="card-header">
-      <span class="req-id">#{{ u['id'] }}</span>
-      <span class="badge {{ u['status'] }}">{{ u['status'] }}</span>
-    </div>
-    <div class="user-name">{{ u['name'] }}</div>
-    <div class="info-grid">
-      <div class="info-item"><div class="key">Phone</div><div class="val">{{ u['phone'] }}</div></div>
-      <div class="info-item"><div class="key">Site</div><div class="val">{{ u['site'] }}</div></div>
-      <div class="info-item"><div class="key">Type</div><div class="val">{{ (u['id_type'] or 'N/A')|upper }}</div></div>
-      <div class="info-item"><div class="key">UTR</div><div class="val">{{ u['utr'] or 'N/A' }}</div></div>
-      <div class="info-item"><div class="key">Amount</div><div class="val amount-val">₹{{ u['amount'] }}</div></div>
-      <div class="info-item"><div class="key">Date</div><div class="val">{{ u['created_at'][:16] if u['created_at'] else 'N/A' }}</div></div>
-      {% if u['id_pass'] %}
-      <div class="info-item" style="grid-column:1/-1"><div class="key">ID & Password Sent</div><div class="val idpass-val">{{ u['id_pass'] }}</div></div>
-      {% endif %}
-    </div>
+  <div class="card"><div class="label">Today Registration</div><h2>{{ stats.today_reg }}</h2></div>
+  <div class="card"><div class="label">Today Deposit</div><h2>₹{{ stats.today_dep }}</h2></div>
+  <div class="card"><div class="label">Total Users</div><h2>{{ stats.total_users }}</h2></div>
+  <div class="card"><div class="label">Total Deposit</div><h2>₹{{ stats.total_dep }}</h2></div>
+</div>
 
-    {% if u['status'] == 'pending' %}
-    <div class="accept-form">
+<div class="container">
+
+  <div class="box">
+    <div class="title">💳 Change UPI &nbsp;<small style="color:#555;font-weight:normal;font-size:0.8rem">Current: {{ current_upi or 'Not set' }}</small></div>
+    <form method="post" action="/admin/upi" style="display:flex;gap:10px;align-items:flex-end">
+      <div style="flex:1">
+        <input type="text" name="upi" placeholder="Enter new UPI ID (e.g. name@upi)" autocomplete="off" style="margin-top:0">
+      </div>
+      <button type="submit" style="margin-top:0;white-space:nowrap">Update UPI</button>
+    </form>
+  </div>
+
+  <div class="tabs">
+    <a class="tab {% if filter == 'pending' %}active{% endif %}" href="/admin/?f=pending">⏳ Pending</a>
+    <a class="tab {% if filter == 'accepted' %}active{% endif %}" href="/admin/?f=accepted">✅ Accepted</a>
+    <a class="tab {% if filter == 'declined' %}active{% endif %}" href="/admin/?f=declined">❌ Declined</a>
+    <a class="tab {% if filter == 'all' %}active{% endif %}" href="/admin/?f=all">All</a>
+  </div>
+
+  <div class="section-label">{{ users|length }} request(s)</div>
+
+  {% if users %}
+    {% for u in users %}
+    <div class="box">
+      <div class="req-header">
+        <div class="title" style="margin-bottom:0">💰 Payment Request</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="req-id">#{{ u['id'] }}</span>
+          <span class="badge {{ u['status'] }}">{{ u['status'] }}</span>
+        </div>
+      </div>
+
+      <div class="user-grid">
+        <div>👤 {{ u['name'] }}</div>
+        <div>📱 {{ u['phone'] }}</div>
+        <div>🌐 {{ u['site'] }} ({{ (u['id_type'] or 'N/A')|upper }})</div>
+        <div class="amount">💰 ₹{{ u['amount'] }}</div>
+      </div>
+
+      <p style="color:#888;font-size:0.85rem;margin-bottom:8px">🔢 UTR: {{ u['utr'] or 'N/A' }} &nbsp;|&nbsp; 🕐 {{ u['created_at'][:16] if u['created_at'] else '' }}</p>
+
+      {% if u['id_pass'] %}
+      <p class="idpass-sent">🎯 ID Sent: <strong>{{ u['id_pass'] }}</strong></p>
+      {% endif %}
+
+      {% if u['status'] == 'pending' %}
       <form method="post" action="/admin/accept/{{ u['id'] }}">
-        <input type="text" name="idpass" placeholder="Enter ID & Password to send user" required autocomplete="off">
-        <div class="actions">
+        <input type="text" name="idpass" placeholder="Enter ID & Password to send to user" required autocomplete="off">
+        <div class="actions" style="margin-top:8px">
           <button class="btn-approve" type="submit">✅ Accept & Send ID</button>
         </div>
       </form>
+      <div class="actions" style="margin-top:8px">
+        <form method="post" action="/admin/decline/{{ u['id'] }}">
+          <button class="btn-reject" type="submit">❌ Decline</button>
+        </form>
+      </div>
+      {% endif %}
     </div>
-    <div class="actions">
-      <form method="post" action="/admin/decline/{{ u['id'] }}">
-        <button class="btn-reject" type="submit">❌ Decline</button>
-      </form>
-    </div>
-    {% endif %}
-  </div>
-  {% endfor %}
-</div>
-{% else %}
-<div class="empty">No requests found.</div>
-{% endif %}
+    {% endfor %}
+  {% else %}
+  <div class="empty">No requests found.</div>
+  {% endif %}
 
+</div>
 </body>
 </html>
 """
