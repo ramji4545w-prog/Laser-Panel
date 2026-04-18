@@ -1,0 +1,170 @@
+from flask import Flask, render_template_string, request, redirect, session, jsonify
+import sqlite3
+import datetime
+
+app = Flask(__name__)
+app.secret_key = "secret123"
+
+# ---------------- DB ----------------
+def init_db():
+    conn = sqlite3.connect("data.db")
+    c = conn.cursor()
+
+    c.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS subusers(id INTEGER PRIMARY KEY, name TEXT, password TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, user TEXT, amount INTEGER, status TEXT)")
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ---------------- LOGIN ----------------
+@app.route("/", methods=["GET","POST"])
+def login():
+    if request.method == "POST":
+        if request.form["user"] == "admin" and request.form["pass"] == "1234":
+            session["admin"] = True
+            return redirect("/admin")
+    return '''
+    <h2>Login</h2>
+    <form method="post">
+    <input name="user" placeholder="username"><br>
+    <input name="pass" placeholder="password"><br>
+    <button>Login</button>
+    </form>
+    '''
+
+# ---------------- DASHBOARD ----------------
+@app.route("/admin")
+def admin():
+    if "admin" not in session:
+        return redirect("/")
+
+    conn = sqlite3.connect("data.db")
+    c = conn.cursor()
+
+    users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    payments = c.execute("SELECT COUNT(*) FROM payments").fetchone()[0]
+
+    conn.close()
+
+    return render_template_string(TEMPLATE, users=users, payments=payments, page="dashboard")
+
+# ---------------- REGISTRATIONS ----------------
+@app.route("/admin/registrations")
+def registrations():
+    conn = sqlite3.connect("data.db")
+    c = conn.cursor()
+    data = c.execute("SELECT * FROM users").fetchall()
+    conn.close()
+    return render_template_string(TEMPLATE, data=data, page="registrations")
+
+# ---------------- PAYMENTS ----------------
+@app.route("/admin/payments", methods=["GET","POST"])
+def payments():
+    conn = sqlite3.connect("data.db")
+    c = conn.cursor()
+
+    if request.method == "POST":
+        pid = request.form["id"]
+        action = request.form["action"]
+        c.execute("UPDATE payments SET status=? WHERE id=?", (action, pid))
+        conn.commit()
+
+    data = c.execute("SELECT * FROM payments").fetchall()
+    conn.close()
+
+    return render_template_string(TEMPLATE, data=data, page="payments")
+
+# ---------------- SUB USERS ----------------
+@app.route("/admin/subusers", methods=["GET","POST"])
+def subusers():
+    conn = sqlite3.connect("data.db")
+    c = conn.cursor()
+
+    if request.method == "POST":
+        name = request.form["name"]
+        password = request.form["password"]
+        c.execute("INSERT INTO subusers(name,password) VALUES(?,?)",(name,password))
+        conn.commit()
+
+    data = c.execute("SELECT * FROM subusers").fetchall()
+    conn.close()
+
+    return render_template_string(TEMPLATE, data=data, page="subusers")
+
+# ---------------- TEMPLATE ----------------
+TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+<title>Admin Panel</title>
+<style>
+body{background:#0f172a;color:white;font-family:sans-serif}
+.sidebar{width:200px;position:fixed;height:100%;background:#020617;padding:20px}
+.sidebar a{display:block;color:white;margin:10px 0;text-decoration:none}
+.main{margin-left:220px;padding:20px}
+.card{background:#1e293b;padding:20px;margin:10px;border-radius:10px;display:inline-block}
+button{background:red;color:white;border:none;padding:5px 10px;border-radius:5px}
+input{padding:5px}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+<h2>ADMIN</h2>
+<a href="/admin">Dashboard</a>
+<a href="/admin/registrations">Registrations</a>
+<a href="/admin/payments">Payments</a>
+<a href="/admin/subusers">Sub Users</a>
+</div>
+
+<div class="main">
+
+{% if page=="dashboard" %}
+<div class="card">Total Users: {{users}}</div>
+<div class="card">Total Payments: {{payments}}</div>
+{% endif %}
+
+{% if page=="registrations" %}
+<h2>Users</h2>
+{% for u in data %}
+<div class="card">{{u[1]}}</div>
+{% endfor %}
+{% endif %}
+
+{% if page=="payments" %}
+<h2>Payments</h2>
+{% for p in data %}
+<div class="card">
+User: {{p[1]}} ₹{{p[2]}} ({{p[3]}})
+<form method="post">
+<input type="hidden" name="id" value="{{p[0]}}">
+<button name="action" value="accepted">Accept</button>
+<button name="action" value="declined">Decline</button>
+</form>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if page=="subusers" %}
+<h2>Add Sub User</h2>
+<form method="post">
+<input name="name" placeholder="Name">
+<input name="password" placeholder="Password">
+<button>Add</button>
+</form>
+
+{% for s in data %}
+<div class="card">{{s[1]}} ({{s[2]}})</div>
+{% endfor %}
+{% endif %}
+
+</div>
+</body>
+</html>
+'''
+
+# ---------------- RUN ----------------
+app.run(host="0.0.0.0", port=5000)
