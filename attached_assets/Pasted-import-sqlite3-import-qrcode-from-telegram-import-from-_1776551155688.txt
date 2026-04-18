@@ -1,0 +1,116 @@
+import sqlite3
+import qrcode
+from telegram import *
+from telegram.ext import *
+
+TOKEN = "YOUR_BOT_TOKEN"
+ADMIN_CHAT_ID = 123456789  # apna telegram id daalo
+
+conn = sqlite3.connect("database.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""CREATE TABLE IF NOT EXISTS users (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT,
+phone TEXT,
+site TEXT,
+amount TEXT,
+status TEXT
+)""")
+
+# START
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🔥 New ID", callback_data="new")],
+        [InlineKeyboardButton("🎮 Demo ID", callback_data="demo")]
+    ]
+
+    await update.message.reply_text(
+        "🙏 Welcome Sir!\nPlease select an option:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# BUTTON HANDLER
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data in ["new", "demo"]:
+        context.user_data["type"] = query.data
+
+        keyboard = [[InlineKeyboardButton(site, callback_data=site)] for site in [
+            "Laser247", "Tiger399", "AllPanel", "Diamond"
+        ]]
+
+        await query.message.reply_text(
+            "📌 Sir, please select your site:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    else:
+        context.user_data["site"] = query.data
+        await query.message.reply_text("👤 Sir, please enter your name:")
+
+# TEXT HANDLER
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if "name" not in context.user_data:
+        context.user_data["name"] = text
+        await update.message.reply_text("📱 Sir, please enter your number:")
+
+    elif "phone" not in context.user_data:
+        context.user_data["phone"] = text
+        await update.message.reply_text("💰 Sir, enter deposit amount:")
+
+    elif "amount" not in context.user_data:
+        context.user_data["amount"] = text
+
+        # QR generate
+        upi = "upi://pay?pa=yourupi@upi&pn=Payment&am=" + text
+        img = qrcode.make(upi)
+        img.save("qr.png")
+
+        await update.message.reply_photo(
+            photo=open("qr.png", "rb"),
+            caption=f"""💳 Sir, please complete payment
+
+UPI ID: yourupi@upi
+Amount: ₹{text}
+
+📸 Send screenshot + UTR"""
+        )
+
+    else:
+        # Save user
+        cursor.execute("INSERT INTO users (name, phone, site, amount, status) VALUES (?, ?, ?, ?, ?)",
+                       (context.user_data["name"], context.user_data["phone"],
+                        context.user_data["site"], context.user_data["amount"], "pending"))
+        conn.commit()
+
+        await update.message.reply_text("⏳ Sir, please wait 2 minutes...")
+
+        # Send to admin
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"""
+📥 New Payment Request
+
+👤 Name: {context.user_data['name']}
+📱 Phone: {context.user_data['phone']}
+🌐 Site: {context.user_data['site']}
+💰 Amount: ₹{context.user_data['amount']}
+"""
+        )
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, message_handler))
+
+    app.run_polling()
+
+if name == "__main__":
+    main()
