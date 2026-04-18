@@ -1,0 +1,214 @@
+from flask import Flask, request, redirect, render_template_string
+import sqlite3
+import datetime
+import requests
+
+app = Flask(__name__)
+
+TOKEN = "YOUR_BOT_TOKEN"
+
+def db():
+    return sqlite3.connect("database.db")
+
+# ---------------- UI DESIGN ----------------
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>🔥 Admin Panel</title>
+<style>
+body {
+    background:#0d0d0d;
+    color:white;
+    font-family:Arial;
+}
+.header {
+    color:red;
+    font-size:28px;
+    margin:20px;
+}
+.cards {
+    display:flex;
+    gap:20px;
+    margin:20px;
+}
+.card {
+    flex:1;
+    background:#111;
+    padding:20px;
+    border:1px solid red;
+    border-radius:10px;
+    text-align:center;
+}
+.container {
+    margin:20px;
+}
+.box {
+    background:#111;
+    padding:20px;
+    margin-bottom:20px;
+    border:1px solid red;
+    border-radius:10px;
+}
+button {
+    background:red;
+    color:white;
+    padding:8px 15px;
+    border:none;
+    margin-top:5px;
+    cursor:pointer;
+}
+input {
+    padding:8px;
+    margin-top:5px;
+    width:100%;
+}
+</style>
+</head>
+<body>
+
+<div class="header">🔥 ADMIN PANEL</div>
+
+<div class="cards">
+    <div class="card">Today Reg<br>{{today_reg}}</div>
+    <div class="card">Today Deposit<br>₹{{today_dep}}</div>
+    <div class="card">Total Users<br>{{total_users}}</div>
+    <div class="card">Total Deposit<br>₹{{total_dep}}</div>
+</div>
+
+<div class="container">
+
+<div class="box">
+<h3>💳 Change UPI</h3>
+<form method="post" action="/upi">
+<input type="text" name="upi" placeholder="Enter new UPI" required>
+<button>Update</button>
+</form>
+</div>
+
+{% for u in users %}
+<div class="box">
+<p>👤 {{u[1]}} | 📱 {{u[2]}}</p>
+<p>🌐 {{u[3]}} | 💰 ₹{{u[4]}}</p>
+<p>UTR: {{u[6]}}</p>
+
+{% if u[7] %}
+<img src="{{u[7]}}" width="200">
+{% endif %}
+
+<form method="post" action="/accept/{{u[0]}}">
+<input type="text" name="idpass" placeholder="Enter ID & Password" required>
+<button>✅ Accept</button>
+</form>
+
+<form method="post" action="/decline/{{u[0]}}">
+<button>❌ Decline</button>
+</form>
+
+</div>
+{% endfor %}
+
+</div>
+
+</body>
+</html>
+"""
+
+# ---------------- HOME ----------------
+@app.route("/")
+def home():
+    conn = db()
+
+    today = datetime.date.today()
+
+    users = conn.execute("SELECT * FROM users WHERE status='pending'").fetchall()
+
+    today_reg = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE date(created_at)=?",
+        (today,)
+    ).fetchone()[0]
+
+    today_dep = conn.execute(
+        "SELECT SUM(amount) FROM users WHERE status='accepted' AND date(created_at)=?",
+        (today,)
+    ).fetchone()[0] or 0
+
+    total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    total_dep = conn.execute(
+        "SELECT SUM(amount) FROM users WHERE status='accepted'"
+    ).fetchone()[0] or 0
+
+    return render_template_string(
+        HTML,
+        users=users,
+        today_reg=today_reg,
+        today_dep=today_dep,
+        total_users=total_users,
+        total_dep=total_dep
+    )
+
+# ---------------- ACCEPT ----------------
+@app.route("/accept/<id>", methods=["POST"])
+def accept(id):
+    idpass = request.form.get("idpass")
+
+    conn = db()
+    user = conn.execute(
+        "SELECT telegram_id FROM users WHERE id=?",
+        (id,)
+    ).fetchone()
+
+    conn.execute(
+        "UPDATE users SET status='accepted', id_pass=? WHERE id=?",
+        (idpass, id)
+    )
+    conn.commit()
+
+    chat_id = user[0]
+
+    # message 1
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={chat_id}&text=✅ Sir, Payment Received\\nPlease wait 5 minutes")
+
+    # message 2
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={chat_id}&text=🎯 Sir, Your ID:\\n{idpass}")
+
+    # message 3
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={chat_id}&text=🔴 LASER247 OFFICIAL SERVICE 🔴")
+
+    return redirect("/")
+
+# ---------------- DECLINE ----------------
+@app.route("/decline/<id>", methods=["POST"])
+def decline(id):
+    conn = db()
+    user = conn.execute(
+        "SELECT telegram_id FROM users WHERE id=?",
+        (id,)
+    ).fetchone()
+
+    chat_id = user[0]
+
+    requests.get(f"https://api.
+telegram.org/bot{TOKEN}/sendMessage?chat_id={chat_id}&text=❌ Sir, Payment not received\\nContact support")
+
+    conn.execute("UPDATE users SET status='declined' WHERE id=?", (id,))
+    conn.commit()
+
+    return redirect("/")
+
+# ---------------- UPI ----------------
+@app.route("/upi", methods=["POST"])
+def upi():
+    new_upi = request.form.get("upi")
+
+    conn = db()
+    conn.execute("DELETE FROM settings")
+    conn.execute("INSERT INTO settings (upi) VALUES (?)", (new_upi,))
+    conn.commit()
+
+    return redirect("/")
+
+# ---------------- RUN ----------------
+if name == "__main__":
+    app.run(host="0.0.0.0", port=5000)

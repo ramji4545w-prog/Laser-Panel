@@ -13,11 +13,14 @@ from telegram.ext import (
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
-UPI_ID = os.environ["UPI_ID"]
+DEFAULT_UPI = os.environ.get("UPI_ID", "")
 
 SITES = ["Laser247", "Tiger399", "AllPanel", "Diamond"]
 
-conn = sqlite3.connect("database.db", check_same_thread=False)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "database.db")
+
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -30,11 +33,28 @@ CREATE TABLE IF NOT EXISTS users (
     id_type TEXT,
     amount TEXT,
     utr TEXT,
+    id_pass TEXT,
     status TEXT DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY,
+    upi TEXT
+)
+""")
+# Migration: add id_pass if missing
+try:
+    cursor.execute("ALTER TABLE users ADD COLUMN id_pass TEXT")
+except Exception:
+    pass
 conn.commit()
+
+
+def get_upi():
+    row = cursor.execute("SELECT upi FROM settings WHERE id=1").fetchone()
+    return row[0] if row else DEFAULT_UPI
 
 
 def admin_only(func):
@@ -117,7 +137,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif "amount" not in context.user_data:
         context.user_data["amount"] = text
 
-        upi_url = f"upi://pay?pa={UPI_ID}&pn=Payment&am={text}&cu=INR"
+        upi_id = get_upi()
+        upi_url = f"upi://pay?pa={upi_id}&pn=Payment&am={text}&cu=INR"
         img = qrcode.make(upi_url)
         img.save("qr.png")
 
@@ -125,7 +146,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo=open("qr.png", "rb"),
             caption=(
                 f"💳 Sir, please complete the payment\n\n"
-                f"UPI ID: `{UPI_ID}`\n"
+                f"UPI ID: `{upi_id}`\n"
                 f"Amount: ₹{text}\n\n"
                 f"📸 After payment, first send your *UTR number*, then send the screenshot."
             ),
