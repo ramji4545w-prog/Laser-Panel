@@ -1,0 +1,236 @@
+import os, sqlite3, qrcode
+from flask import Flask, request, redirect, session
+from threading import Thread
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+TOKEN = "YOUR_BOT_TOKEN"
+ADMIN_ID = 123456789
+
+app = Flask(__name__)
+app.secret_key = "secret"
+
+# ===== DATABASE =====
+db = sqlite3.connect("data.db", check_same_thread=False)
+cur = db.cursor()
+
+cur.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, chat INTEGER, amount TEXT, status TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT, value TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS subusers(username TEXT, password TEXT)")
+db.commit()
+
+cur.execute("INSERT OR IGNORE INTO settings VALUES('upi','demo@upi')")
+db.commit()
+
+# ===== BOT =====
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [
+        [InlineKeyboardButton("🆕 New ID", callback_data="new")],
+        [InlineKeyboardButton("🎁 Demo ID", callback_data="demo")]
+    ]
+    await update.message.reply_text("🙏 Welcome Sir\nChoose option:", reply_markup=InlineKeyboardMarkup(kb))
+
+async def btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    sites = [
+        "Laser247",
+        "Tiger399",
+        "Allpanel",
+        "Diamond"
+    ]
+
+    kb = [[InlineKeyboardButton(s, callback_data=s)] for s in sites]
+    await q.message.reply_text("🌐 Select Site Sir:", reply_markup=InlineKeyboardMarkup(kb))
+
+async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text
+    chat = update.message.chat_id
+
+    if msg.isdigit():
+        cur.execute("INSERT INTO users(chat,amount,status) VALUES(?,?,?)",(chat,msg,"pending"))
+        db.commit()
+
+        upi = cur.execute("SELECT value FROM settings WHERE key='upi'").fetchone()[0]
+
+        qr = qrcode.make(f"upi://pay?pa={upi}&am={msg}")
+        qr.save("qr.png")
+
+        await update.message.reply_photo(open("qr.png","rb"),
+        caption=f"💳 Pay ₹{msg}\nUPI: {upi}\nSend screenshot + UTR Sir")
+
+# ===== PANEL UI =====
+
+def layout(content):
+    return f"""
+    <html>
+    <head>
+    <title>ADMIN PRO</title>
+    <style>
+    body {{background:#0d0d0d;color:white;font-family:sans-serif}}
+    .sidebar {{
+        width:200px;float:left;height:100vh;
+        background:#111;padding:20px
+    }}
+    .sidebar a {{
+        display:block;color:#fff;margin:10px 0;
+        text-decoration:none
+    }}
+    .main {{margin-left:220px;padding:20px}}
+    .box {{
+        background:#1a1a1a;padding:20px;
+        border-radius:10px;margin:10px
+    }}
+    button {{background:red;color:white;border:none;padding:10px}}
+    </style>
+    </head>
+    <body>
+
+    <div class="sidebar">
+        <h2>🔥 ADMIN</h2>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/payments">Payments</a>
+        <a href="/users">Users</a>
+        <a href="/sub">Sub Users</a>
+        <a href="/settings">Settings</a>
+    </div>
+
+    <div class="main">
+    {content}
+    </div>
+
+    </body>
+    </html>
+    """
+
+# ===== ROUTES =====
+
+@app.route("/")
+def login():
+    return """
+    <h2>Login</h2>
+    <form method="post" action="/login">
+    <input name="u" placeholder="Username"><br>
+    <input name="p" placeholder="Password"><br>
+    <button>Login</button>
+    </form>
+    """
+
+@app.route("/login", methods=["POST"])
+def do_login():
+    u = request.form["u"]
+    p = request.form["p"]
+
+    if u=="admin" and p=="admin":
+        session["admin"]=True
+        return redirect("/dashboard")
+    return "Wrong"
+
+@app.route("/dashboard")
+def dashboard():
+    total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    pending = cur.execute("SELECT COUNT(*) FROM users WHERE status='pending'").fetchone()[0]
+
+    return layout(f"""
+    <h1>Dashboard</h1>
+    <div class="box">Total Users: {total}</div>
+    <div class="box">Pending Payments: {pending}</div>
+    """)
+
+@app.route("/payments")
+def payments():
+    data = cur.
+execute("SELECT * FROM users WHERE status='pending'").fetchall()
+
+    html = "<h1>Payments</h1>"
+
+    for d in data:
+        html += f"""
+        <div class='box'>
+        User {d[1]} | ₹{d[2]}
+        <a href='/accept/{d[0]}'><button>Accept</button></a>
+        <a href='/decline/{d[0]}'><button>Decline</button></a>
+        </div>
+        """
+
+    return layout(html)
+
+@app.route("/accept/<id>")
+def accept(id):
+    cur.execute("UPDATE users SET status='accepted' WHERE id=?",(id,))
+    db.commit()
+    return redirect("/payments")
+
+@app.route("/decline/<id>")
+def decline(id):
+    cur.execute("UPDATE users SET status='declined' WHERE id=?",(id,))
+    db.commit()
+    return redirect("/payments")
+
+@app.route("/users")
+def users():
+    data = cur.execute("SELECT * FROM users").fetchall()
+
+    html = "<h1>Users</h1>"
+    for d in data:
+        html += f"<div class='box'>User {d[1]} - ₹{d[2]} - {d[3]}</div>"
+
+    return layout(html)
+
+@app.route("/sub", methods=["GET","POST"])
+def sub():
+    if request.method=="POST":
+        u=request.form["u"]
+        p=request.form["p"]
+        cur.execute("INSERT INTO subusers VALUES(?,?)",(u,p))
+        db.commit()
+
+    data=cur.execute("SELECT * FROM subusers").fetchall()
+
+    html="""
+    <h1>Sub Users</h1>
+    <form method="post">
+    <input name="u" placeholder="username">
+    <input name="p" placeholder="password">
+    <button>Add</button>
+    </form>
+    """
+
+    for d in data:
+        html += f"<div class='box'>{d[0]}</div>"
+
+    return layout(html)
+
+@app.route("/settings", methods=["GET","POST"])
+def settings():
+    if request.method=="POST":
+        new=request.form["upi"]
+        cur.execute("UPDATE settings SET value=? WHERE key='upi'",(new,))
+        db.commit()
+
+    upi = cur.execute("SELECT value FROM settings WHERE key='upi'").fetchone()[0]
+
+    return layout(f"""
+    <h1>Settings</h1>
+    Current UPI: {upi}
+    <form method="post">
+    <input name="upi">
+    <button>Update</button>
+    </form>
+    """)
+
+# ===== RUN BOT + WEB =====
+
+def run_bot():
+    bot = ApplicationBuilder().token(TOKEN).build()
+    bot.add_handler(CommandHandler("start", start))
+    bot.add_handler(CallbackQueryHandler(btn))
+    bot.add_handler(MessageHandler(filters.TEXT, text))
+    bot.run_polling()
+
+Thread(target=run_bot).start()
+
+if name == "__main__":
+    app.run(host="0.0.0.0", port=8000)
