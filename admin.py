@@ -60,10 +60,11 @@ def init_db():
         conn.execute("ALTER TABLE subadmins ADD COLUMN password TEXT")
     except Exception:
         pass
-    try:
-        conn.execute("ALTER TABLE users ADD COLUMN id_pass TEXT")
-    except Exception:
-        pass
+    for col in ["id_pass TEXT", "id_type TEXT", "utr TEXT", "phone TEXT", "site TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col}")
+        except Exception:
+            pass
     conn.commit()
 
 
