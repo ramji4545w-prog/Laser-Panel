@@ -1,0 +1,188 @@
+import os
+import sqlite3
+from flask import Flask, render_template_string, request, redirect, session
+from threading import Thread
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+TOKEN = "YOUR_BOT_TOKEN"
+ADMIN_ID = 123456789  # apna telegram id
+
+app = Flask(__name__)
+app.secret_key = "secret123"
+
+# ================= DB =================
+conn = sqlite3.connect("data.db", check_same_thread=False)
+cur = conn.cursor()
+
+cur.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT, phone TEXT, site TEXT, amount TEXT, status TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, user_id INTEGER, utr TEXT, status TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS subusers(username TEXT, password TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT, value TEXT)")
+conn.commit()
+
+# default UPI
+cur.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('upi','test@upi')")
+conn.commit()
+
+# ================= BOT =================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🆕 New ID", callback_data="new")],
+        [InlineKeyboardButton("🎁 Demo ID", callback_data="demo")]
+    ]
+    await update.message.reply_text("🙏 Welcome Sir\nPlease choose option:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    sites = [
+        "https://www.laser247official.live",
+        "tiger399.com",
+        "https://allpanelexch9.co/",
+        "Diamondexchenge.com"
+    ]
+
+    keyboard = [[InlineKeyboardButton(s, callback_data=s)] for s in sites]
+
+    await query.message.reply_text("🌐 Select Site Sir:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text
+
+    if msg.isdigit():
+        user_id = update.message.chat_id
+        cur.execute("INSERT INTO users(name,phone,site,amount,status) VALUES(?,?,?,?,?)",
+                    ("user","000", "site", msg, "pending"))
+        conn.commit()
+
+        upi = cur.execute("SELECT value FROM settings WHERE key='upi'").fetchone()[0]
+
+        await update.message.reply_text(f"💳 Pay ₹{msg} to UPI: {upi}\nSend Screenshot + UTR")
+
+# ================= ADMIN PANEL =================
+
+@app.route("/")
+def login():
+    return '''
+    <h2>Login</h2>
+    <form method="post" action="/login">
+    <input name="u" placeholder="Username">
+    <input name="p" placeholder="Password">
+    <button>Login</button>
+    </form>
+    '''
+
+@app.route("/login", methods=["POST"])
+def do_login():
+    u = request.form["u"]
+    p = request.form["p"]
+
+    if u == "admin" and p == "admin":
+        session["admin"] = True
+        return redirect("/dashboard")
+    return "Wrong"
+
+@app.route("/dashboard")
+def dashboard():
+    if "admin" not in session:
+        return redirect("/")
+
+    total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    pending = cur.execute("SELECT COUNT(*) FROM users WHERE status='pending'").fetchone()[0]
+
+    return f'''
+    <h1>🔥 ADMIN PANEL</h1>
+    <p>Total Users: {total}</p>
+    <p>Pending: {pending}</p>
+
+    <a href="/payments">Payments</a><br>
+    <a href="/subusers">Sub Users</a><br>
+    <a href="/upi">Change UPI</a>
+    '''
+
+@app.route("/payments")
+def payments():
+    data = cur.execute("SELECT * FROM users WHERE status='pending'").fetchall()
+
+    html = "<h2>Payments</h2>"
+    for d in data:
+        html += f'''
+        <div>
+        User {d[0]} - ₹{d[4]}
+        <a href="/accept/{d[0]}">Accept</a>
+        <a href="/decline/{d[0]}">Decline</a>
+        </div>
+        '''
+    return html
+
+@app.route("/accept/<id>")
+def accept(id):
+    cur.execute("UPDATE users SET status='accepted' WHERE id=?", (id,))
+    conn.commit()
+    return redirect("/payments")
+
+@app.route("/decline/<id>")
+def decline(id):
+    cur.
+execute("UPDATE users SET status='declined' WHERE id=?", (id,))
+    conn.commit()
+    return redirect("/payments")
+
+@app.route("/subusers", methods=["GET","POST"])
+def subusers():
+    if request.method == "POST":
+        u = request.form["u"]
+        p = request.form["p"]
+        cur.execute("INSERT INTO subusers VALUES(?,?)",(u,p))
+        conn.commit()
+
+    data = cur.execute("SELECT * FROM subusers").fetchall()
+
+    html = '''
+    <h2>Sub Users</h2>
+    <form method="post">
+    <input name="u">
+    <input name="p">
+    <button>Add</button>
+    </form>
+    '''
+
+    for d in data:
+        html += f"<p>{d[0]}</p>"
+
+    return html
+
+@app.route("/upi", methods=["GET","POST"])
+def upi():
+    if request.method == "POST":
+        new = request.form["upi"]
+        cur.execute("UPDATE settings SET value=? WHERE key='upi'",(new,))
+        conn.commit()
+
+    current = cur.execute("SELECT value FROM settings WHERE key='upi'").fetchone()[0]
+
+    return f'''
+    <h2>UPI</h2>
+    Current: {current}
+    <form method="post">
+    <input name="upi">
+    <button>Update</button>
+    </form>
+    '''
+
+# ================= RUN BOTH =================
+
+def run_bot():
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CallbackQueryHandler(button))
+    app_bot.add_handler(MessageHandler(filters.TEXT, text_handler))
+    app_bot.run_polling()
+
+Thread(target=run_bot).start()
+
+if name == "__main__":
+    app.run(host="0.0.0.0", port=8000)

@@ -52,9 +52,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS subadmins (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            password TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    try:
+        conn.execute("ALTER TABLE subadmins ADD COLUMN password TEXT")
+    except Exception:
+        pass
     try:
         conn.execute("ALTER TABLE users ADD COLUMN id_pass TEXT")
     except Exception:
@@ -602,8 +607,9 @@ def subusers():
         action = request.form.get("action")
         if action == "add":
             name = request.form.get("name", "").strip()
+            password = request.form.get("password", "").strip()
             if name:
-                db.execute("INSERT INTO subadmins (name) VALUES (?)", (name,))
+                db.execute("INSERT INTO subadmins (name, password) VALUES (?, ?)", (name, password))
                 db.commit()
                 flash(f"✅ Sub user '{name}' added.")
         elif action == "delete":
@@ -619,6 +625,7 @@ def subusers():
         f"""<tr>
           <td>#{r['id']}</td>
           <td>{r['name']}</td>
+          <td style='color:#4a90e2'>{r['password'] or '—'}</td>
           <td style='color:#555;font-size:0.82rem'>{str(r['created_at'])[:16]}</td>
           <td>
             <form method='post' style='display:inline'>
@@ -629,21 +636,22 @@ def subusers():
           </td>
         </tr>"""
         for r in rows
-    ]) or "<tr><td colspan='4' style='color:#555;text-align:center'>No sub users added yet</td></tr>"
+    ]) or "<tr><td colspan='5' style='color:#555;text-align:center'>No sub users added yet</td></tr>"
 
     content = f"""
-<div style="max-width:600px">
+<div style="max-width:640px">
   <div style="background:#111;border:1px solid #1f1f1f;border-radius:10px;padding:20px;margin-bottom:20px">
     <div style="color:#ff3b3b;font-weight:bold;margin-bottom:14px">➕ Add Sub User</div>
-    <form method="post" style="display:flex;gap:10px;align-items:center">
+    <form method="post" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <input type="hidden" name="action" value="add">
-      <input type="text" name="name" placeholder="Enter sub user name" required autocomplete="off" style="flex:1">
+      <input type="text" name="name" placeholder="Username" required autocomplete="off" style="flex:1;min-width:140px">
+      <input type="text" name="password" placeholder="Password" autocomplete="off" style="flex:1;min-width:140px">
       <button class="btn">Add</button>
     </form>
   </div>
 
   <table>
-    <tr><th>#</th><th>Name</th><th>Added</th><th>Action</th></tr>
+    <tr><th>#</th><th>Username</th><th>Password</th><th>Added</th><th>Action</th></tr>
     {rows_html}
   </table>
 </div>
