@@ -333,18 +333,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         req_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         context.user_data["step"] = None
 
-        # Tell user to wait
+        # Tell user to wait — simple message only
         await update.message.reply_text(
-            f"✅ *Request Submit Ho Gayi Sir!*\n\n"
-            f"📋 *Details:*\n"
-            f"👤 Naam: {ud.get('name')} Sir\n"
-            f"📱 Mobile: {ud.get('phone')}\n"
-            f"🌐 Site: {ud.get('site')}\n"
-            f"💰 Amount: ₹{ud.get('amount')}\n"
-            f"🔢 UTR: `{utr}`\n\n"
-            f"⏳ *Sir, please 2-5 minute wait karein.*\n"
-            f"Payment verify hote hi aapki ID bhej di jayegi. 🙏\n\n"
-            f"_Thank you for choosing Laser Panel Sir!_ ⚡",
+            f"✅ *Shukriya {ud.get('name')} Sir!*\n\n"
+            f"⏳ Sir, please *2-5 minute wait karein.*\n"
+            f"Aapki ID verify hote hi bhej di jayegi. 🙏",
             parse_mode="Markdown",
         )
 
