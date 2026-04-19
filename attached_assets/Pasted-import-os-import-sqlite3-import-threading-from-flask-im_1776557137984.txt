@@ -1,0 +1,199 @@
+import os
+import sqlite3
+import threading
+from flask import Flask, request, redirect, session, render_template_string
+import telebot
+
+# ---------------- CONFIG ----------------
+TOKEN = os.getenv("BOT_TOKEN") or "PUT_YOUR_BOT_TOKEN"
+ADMIN_ID = int(os.getenv("ADMIN_ID") or "123456789")
+
+bot = telebot.TeleBot(TOKEN)
+
+app = Flask(__name__)
+app.secret_key = "secret123"
+
+PORT = int(os.environ.get("PORT", 5000))
+
+# ---------------- DATABASE ----------------
+def db():
+    return sqlite3.connect("data.db", check_same_thread=False)
+
+def init_db():
+    conn = db()
+    c = conn.cursor()
+
+    c.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, tg_id INTEGER)")
+    c.execute("CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, tg_id INTEGER, amount INTEGER, status TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS subusers(id INTEGER PRIMARY KEY, name TEXT, password TEXT)")
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ---------------- BOT ----------------
+@bot.message_handler(commands=['start'])
+def start(msg):
+    conn = db()
+    c = conn.cursor()
+    c.execute("INSERT INTO users(tg_id) VALUES(?)",(msg.chat.id,))
+    conn.commit()
+    conn.close()
+    bot.send_message(msg.chat.id, "Welcome! Send payment screenshot.")
+
+@bot.message_handler(content_types=['photo'])
+def payment(msg):
+    conn = db()
+    c = conn.cursor()
+    c.execute("INSERT INTO payments(tg_id,amount,status) VALUES(?,?,?)",(msg.chat.id,100,"pending"))
+    conn.commit()
+    conn.close()
+    bot.send_message(ADMIN_ID, f"New Payment Request from {msg.chat.id}")
+
+# ---------------- LOGIN ----------------
+@app.route("/", methods=["GET","POST"])
+def login():
+    if request.method=="POST":
+        if request.form["user"]=="admin" and request.form["pass"]=="1234":
+            session["admin"]=True
+            return redirect("/admin")
+    return '''
+    <h2>Admin Login</h2>
+    <form method="post">
+    <input name="user"><br>
+    <input name="pass" type="password"><br>
+    <button>Login</button>
+    </form>
+    '''
+
+# ---------------- DASHBOARD ----------------
+@app.route("/admin")
+def admin():
+    if "admin" not in session:
+        return redirect("/")
+
+    conn=db()
+    c=conn.cursor()
+
+    users=c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    payments=c.execute("SELECT COUNT(*) FROM payments").fetchone()[0]
+
+    conn.close()
+
+    return render_template_string(TEMPLATE, page="dashboard", users=users, payments=payments)
+
+# ---------------- PAYMENTS ----------------
+@app.route("/admin/payments", methods=["GET","POST"])
+def payments():
+    conn=db()
+    c=conn.cursor()
+
+    if request.method=="POST":
+        pid=request.form["id"]
+        action=request.form["action"]
+
+        c.execute("UPDATE payments SET status=? WHERE id=?", (action,pid))
+        tg_id=c.execute("SELECT tg_id FROM payments WHERE id=?", (pid,)).fetchone()[0]
+
+        if action=="accepted":
+            bot.send_message(tg_id, "✅ Payment Accepted")
+        else:
+            bot.send_message(tg_id, "❌ Payment Declined")
+
+        conn.commit()
+
+    data=c.execute("SELECT * FROM payments").fetchall()
+    conn.close()
+
+    return render_template_string(TEMPLATE, page="payments", data=data)
+
+# ---------------- SUB USERS ----------------
+@app.route("/admin/subusers", methods=["GET","POST"])
+def subusers():
+    conn=db()
+    c=conn.cursor()
+
+    if request.method=="POST":
+        c.execute("INSERT INTO subusers(name,password) VALUES(?,?)",
+                  (request.form["name"], request.form["password"]))
+        conn.commit()
+
+    data=c.execute("SELECT * FROM subusers").fetchall()
+    conn.close()
+
+    return render_template_string(TEMPLATE, page="subusers", data=data)
+
+# ---------------- TEMPLATE ----------------
+TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+<title>PRO PANEL</title>
+<style>
+body{background:#0f172a;color:white;font-family:sans-serif}
+.sidebar{width:220px;position:fixed;height:100%;background:#020617;padding:20px}
+.sidebar a{display:block;color:white;margin:10px 0;text-decoration:none}
+.main{margin-left:240px;padding:20px}
+.
+card{background:#1e293b;padding:20px;margin:10px;border-radius:10px}
+button{background:#ef4444;color:white;border:none;padding:5px 10px;border-radius:5px}
+input{padding:6px;margin:5px}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+<h2>🔥 ADMIN</h2>
+<a href="/admin">Dashboard</a>
+<a href="/admin/payments">Payments</a>
+<a href="/admin/subusers">Sub Users</a>
+</div>
+
+<div class="main">
+
+{% if page=="dashboard" %}
+<div class="card">Users: {{users}}</div>
+<div class="card">Payments: {{payments}}</div>
+{% endif %}
+
+{% if page=="payments" %}
+<h2>Payments</h2>
+{% for p in data %}
+<div class="card">
+User: {{p[1]}} ₹{{p[2]}} ({{p[3]}})
+<form method="post">
+<input type="hidden" name="id" value="{{p[0]}}">
+<button name="action" value="accepted">Accept</button>
+<button name="action" value="declined">Decline</button>
+</form>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if page=="subusers" %}
+<h2>Add Sub User</h2>
+<form method="post">
+<input name="name" placeholder="Name">
+<input name="password" placeholder="Password">
+<button>Add</button>
+</form>
+
+{% for s in data %}
+<div class="card">{{s[1]}} ({{s[2]}})</div>
+{% endfor %}
+{% endif %}
+
+</div>
+</body>
+</html>
+'''
+
+# ---------------- RUN BOT THREAD ----------------
+def run_bot():
+    bot.infinity_polling()
+
+threading.Thread(target=run_bot).start()
+
+# ---------------- RUN APP ----------------
+app.run(host="0.0.0.0", port=PORT)
