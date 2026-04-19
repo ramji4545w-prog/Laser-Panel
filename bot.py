@@ -194,34 +194,40 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Step 4 — UTR → Save & Notify
     elif step == "utr":
-        ud  = context.user_data
-        utr = text
+        # Pehle saara data local variables mein save karo
+        name          = context.user_data.get("name", "")
+        phone         = context.user_data.get("phone", "")
+        site          = context.user_data.get("site", "")
+        id_type       = context.user_data.get("id_type", "new")
+        amount        = context.user_data.get("amount", "")
+        screenshot_id = context.user_data.get("screenshot_file_id", "")
+        utr           = text
 
+        # DB mein save karo
         db.execute("""INSERT INTO users
             (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
             VALUES (?,?,?,?,?,?,?,?,'pending')""",
-            (update.effective_chat.id, ud.get("name",""), ud.get("phone",""),
-             ud.get("site",""), ud.get("id_type","new"), ud.get("amount",""),
-             utr, ud.get("screenshot_file_id","")))
+            (update.effective_chat.id, name, phone, site, id_type, amount, utr, screenshot_id))
         db.commit()
         req_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # Ab clear karo
         context.user_data.clear()
 
         # User ko sirf wait karne ka message
         await update.message.reply_text(
-            f"✅ *Shukriya {ud.get('name')} Sir!*\n\n"
+            f"✅ *Shukriya {name} Sir!*\n\n"
             f"⏳ Sir, please *2-5 minute wait karein.*\n"
             f"Aapki ID verify hote hi bhej di jayegi. 🙏",
             parse_mode="Markdown",
         )
 
         # Admin ko forward karo (screenshot + details)
-        screenshot_id = ud.get("screenshot_file_id", "")
         caption = (
             f"🔔 *New Request #{req_id}*\n\n"
-            f"👤 {ud.get('name')} | 📱 {ud.get('phone')}\n"
-            f"🌐 {ud.get('site')} ({ud.get('id_type','new').upper()})\n"
-            f"💰 ₹{ud.get('amount')} | 🔢 UTR: {utr}\n"
+            f"👤 {name} | 📱 {phone}\n"
+            f"🌐 {site} ({id_type.upper()})\n"
+            f"💰 ₹{amount} | 🔢 UTR: {utr}\n"
             f"🆔 TG: {update.effective_chat.id}\n\n"
             f"👉 *Admin Panel → Payments*"
         )
