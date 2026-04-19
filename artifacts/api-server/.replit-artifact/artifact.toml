@@ -34,6 +34,15 @@ path = "/api/healthz"
 localPort = 5000
 name = "Admin Panel"
 paths = ["/admin"]
+deploymentTarget = "vm"
 
 [services.development]
 run = "python /home/runner/workspace/admin.py"
+
+[services.production]
+
+[services.production.run]
+args = ["python", "main.py"]
+
+[services.production.run.env]
+PORT = "5000"
