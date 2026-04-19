@@ -222,27 +222,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-        # Admin ko forward karo (screenshot + details)
-        caption = (
-            f"🔔 *New Request #{req_id}*\n\n"
-            f"👤 {name} | 📱 {phone}\n"
-            f"🌐 {site} ({id_type.upper()})\n"
-            f"💰 ₹{amount} | 🔢 UTR: {utr}\n"
-            f"🆔 TG: {update.effective_chat.id}\n\n"
-            f"👉 *Admin Panel → Payments*"
-        )
-        try:
-            if screenshot_id:
-                await update.get_bot().send_photo(
-                    chat_id=ADMIN_CHAT_ID, photo=screenshot_id,
-                    caption=caption, parse_mode="Markdown",
-                )
-            else:
-                await update.get_bot().send_message(
-                    chat_id=ADMIN_CHAT_ID, text=caption, parse_mode="Markdown",
-                )
-        except Exception as e:
-            print(f"Admin notify error: {e}")
+        # Data DB mein save ho gaya — admin web panel se dekhega
 
     else:
         await update.message.reply_text(
