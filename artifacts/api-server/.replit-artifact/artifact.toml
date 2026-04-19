@@ -36,4 +36,4 @@ name = "Admin Panel"
 paths = ["/admin"]
 
 [services.development]
-run = "python /home/runner/workspace/admin.py"
+run = "python /home/runner/workspace/main.py"
