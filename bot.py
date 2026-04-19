@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import qrcode
 
@@ -32,14 +33,14 @@ db.execute("""CREATE TABLE IF NOT EXISTS users (
     screenshot_file_id TEXT, id_pass TEXT,
     status TEXT DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-db.execute("""CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, upi TEXT)""")
+db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, upi TEXT)")
 db.execute("""CREATE TABLE IF NOT EXISTS subadmins (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE, password TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
 db.execute("INSERT OR IGNORE INTO settings (id,upi) VALUES (1,?)", (DEFAULT_UPI,))
-for col in ["id_pass TEXT", "id_type TEXT", "utr TEXT", "phone TEXT",
-            "site TEXT", "screenshot_file_id TEXT"]:
+for col in ["id_pass TEXT","id_type TEXT","utr TEXT","phone TEXT",
+            "site TEXT","screenshot_file_id TEXT"]:
     try: db.execute(f"ALTER TABLE users ADD COLUMN {col}")
     except: pass
 db.commit()
@@ -48,6 +49,53 @@ db.commit()
 def get_upi():
     r = db.execute("SELECT upi FROM settings WHERE id=1").fetchone()
     return r["upi"] if r else DEFAULT_UPI
+
+
+def is_valid_phone(phone: str) -> bool:
+    """10 digit Indian ya international (+...) number accept karo"""
+    phone = phone.strip().replace(" ", "").replace("-", "")
+    if phone.startswith("+"):
+        # International: + ke baad 8-15 digits
+        return re.fullmatch(r'\+\d{8,15}', phone) is not None
+    # Indian: exactly 10 digits
+    return re.fullmatch(r'\d{10}', phone) is not None
+
+
+def is_valid_utr(utr: str) -> bool:
+    """Exactly 12 digits"""
+    return re.fullmatch(r'\d{12}', utr.strip()) is not None
+
+
+def names_match(name1: str, name2: str) -> bool:
+    """Case-insensitive partial name match"""
+    n1 = name1.strip().lower()
+    n2 = name2.strip().lower()
+    # Check if any word matches
+    words1 = set(n1.split())
+    words2 = set(n2.split())
+    return bool(words1 & words2) or n1 in n2 or n2 in n1
+
+
+async def auto_decline(telegram_id: int, name: str, site: str, amount: str,
+                       screenshot_id: str, phone: str, id_type: str, bot):
+    """Name mismatch par auto-decline karo"""
+    db.execute("""INSERT INTO users
+        (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
+        VALUES (?,?,?,?,?,?,?,?,'declined')""",
+        (telegram_id, name, phone, site, id_type, amount, "NAME_MISMATCH", screenshot_id))
+    db.commit()
+
+    await bot.send_message(
+        chat_id=telegram_id,
+        text=(
+            f"❌ *Payment Decline Ho Gayi Sir*\n\n"
+            f"Dear *{name}* Sir,\n"
+            f"Aapke payment mein diya gaya naam aapke account se match nahi karta.\n\n"
+            f"For more information contact here 👉 https://wa.me/919520668248\n\n"
+            f"Dobara try karne ke liye /start karein 🙏"
+        ),
+        parse_mode="Markdown",
+    )
 
 
 # ════════════════════════════════════════
@@ -138,7 +186,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Step 1 — Naam
+    # ── Step 1: Naam ──
     if step == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "phone"
@@ -148,8 +196,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-    # Step 2 — Mobile
+    # ── Step 2: Phone (validate) ──
     elif step == "phone":
+        if not is_valid_phone(text):
+            await update.message.reply_text(
+                "⚠️ Sir, *sahi mobile number* bhejein.\n\n"
+                "📱 Indian number: 10 digit (jaise: 9876543210)\n"
+                "🌍 International: + ke saath (jaise: +919876543210)",
+                parse_mode="Markdown",
+            )
+            return
+
         context.user_data["phone"] = text
         context.user_data["step"]  = "site"
         site_lines = "\n".join(
@@ -169,7 +226,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb),
         )
 
-    # Step 3 — Amount → QR
+    # ── Step 3: Amount → QR ──
     elif step == "amount":
         context.user_data["amount"] = text
         context.user_data["step"]   = "screenshot"
@@ -192,9 +249,48 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: os.remove(qr_path)
         except: pass
 
-    # Step 4 — UTR → Save & Notify
+    # ── Step 4: Payment naam verify ──
+    elif step == "payment_name":
+        entered_name   = context.user_data.get("name", "")
+        payment_name   = text
+
+        if not names_match(entered_name, payment_name):
+            # Auto-decline
+            name          = entered_name
+            phone         = context.user_data.get("phone", "")
+            site          = context.user_data.get("site", "")
+            id_type       = context.user_data.get("id_type", "new")
+            amount        = context.user_data.get("amount", "")
+            screenshot_id = context.user_data.get("screenshot_file_id", "")
+            context.user_data.clear()
+
+            await auto_decline(
+                update.effective_chat.id, name, site, amount,
+                screenshot_id, phone, id_type, update.get_bot()
+            )
+            return
+
+        # Names match — UTR maango
+        context.user_data["step"] = "utr"
+        await update.message.reply_text(
+            "✅ *Naam verify ho gaya Sir!*\n\n"
+            "🔢 Sir, ab apna *UTR number* type karein.\n"
+            "_(Payment ke baad milne wala 12 digit ka number)_",
+            parse_mode="Markdown",
+        )
+
+    # ── Step 5: UTR (validate 12 digits) ──
     elif step == "utr":
-        # Pehle saara data local variables mein save karo
+        if not is_valid_utr(text):
+            await update.message.reply_text(
+                "⚠️ Sir, *sahi UTR number* bhejein.\n\n"
+                "🔢 UTR exactly *12 digit* ka hona chahiye.\n"
+                "_(Jaise: 123456789012)_\n\n"
+                "Bank app mein payment details mein milega Sir.",
+                parse_mode="Markdown",
+            )
+            return
+
         name          = context.user_data.get("name", "")
         phone         = context.user_data.get("phone", "")
         site          = context.user_data.get("site", "")
@@ -203,26 +299,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot_id = context.user_data.get("screenshot_file_id", "")
         utr           = text
 
-        # DB mein save karo
         db.execute("""INSERT INTO users
             (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
             VALUES (?,?,?,?,?,?,?,?,'pending')""",
             (update.effective_chat.id, name, phone, site, id_type, amount, utr, screenshot_id))
         db.commit()
-        req_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-        # Ab clear karo
         context.user_data.clear()
 
-        # User ko sirf wait karne ka message
         await update.message.reply_text(
             f"✅ *Shukriya {name} Sir!*\n\n"
             f"⏳ Sir, please *2-5 minute wait karein.*\n"
             f"Aapki ID verify hote hi bhej di jayegi. 🙏",
             parse_mode="Markdown",
         )
-
-        # Data DB mein save ho gaya — admin web panel se dekhega
 
     else:
         await update.message.reply_text(
@@ -231,7 +320,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ════════════════════════════════════════
-#  PHOTO HANDLER
+#  PHOTO HANDLER — Screenshot
 # ════════════════════════════════════════
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,18 +328,20 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if step == "screenshot":
         context.user_data["screenshot_file_id"] = update.message.photo[-1].file_id
-        context.user_data["step"] = "utr"
+        context.user_data["step"] = "payment_name"
         await update.message.reply_text(
             "✅ *Screenshot mil gayi Sir!*\n\n"
-            "🔢 Sir, ab apna *UTR number* type karein.\n"
-            "_(Transaction ke baad milne wala 12 digit ka number)_",
+            "📝 Sir, payment ke baad aapke bank app ya UPI app mein\n"
+            "*kaun sa naam dikh raha tha?* — wahi naam type karein.",
             parse_mode="Markdown",
         )
-    elif step == "utr":
+
+    elif step in ("payment_name", "utr"):
         await update.message.reply_text(
-            "🙏 Sir, UTR number *text mein type karein* — photo nahi.",
+            "🙏 Sir, *text mein type karein* — photo nahi.",
             parse_mode="Markdown",
         )
+
     else:
         await update.message.reply_text(
             "🙏 Sir, /start type karein aur shuru karein."
