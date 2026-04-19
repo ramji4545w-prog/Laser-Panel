@@ -713,8 +713,9 @@ def payment_action():
         send_tg(row["telegram_id"],
             f"❌ *Payment Declined*\n\n"
             f"Dear *{row['name']}* Sir,\n"
-            f"Your payment of ₹{row['amount']} for *{row['site']}* was declined.\n\n"
-            f"Please contact support or try again with /start 🙏")
+            f"Aapka ₹{row['amount']} ka payment *{row['site']}* ke liye decline ho gaya.\n\n"
+            f"For more information contact here 👉 https://wa.me/919520668248\n\n"
+            f"Dobara try karne ke liye /start karein 🙏")
         flash(f"❌ Request #{req_id} declined. User notified.", "success")
 
     return redirect(url_for("payments"))
@@ -732,12 +733,39 @@ def send_id():
         flash("Request not found.", "error"); return redirect(url_for("payments"))
     db.execute("UPDATE users SET id_pass=? WHERE id=?", (id_pass, req_id))
     db.commit()
+
+    # Message 1 — ID details
     send_tg(row["telegram_id"],
-        f"🎉 *Your ID is Ready!*\n\n"
-        f"Dear *{row['name']}* Sir,\n\n"
+        f"🎉 *Aapki ID Ready Hai Sir!*\n\n"
         f"🌐 Site: *{row['site']}*\n"
         f"🔑 *ID / Password:* `{id_pass}`\n\n"
-        f"Happy Gaming! 🚀\nThank you for choosing Laser Panel 🙏")
+        f"Thank you for choosing Laser Panel 🙏")
+
+    # Message 2 — Deposit & Withdrawal info
+    send_tg(row["telegram_id"],
+        "🔴✨ LASER247 OFFICIAL SERVICE ✨🔴\n\n"
+        "⚡ Fast • Secure • Trusted | तेज • सुरक्षित • भरोसेमंद ⚡\n\n"
+        "💰 💎 LASER247 Deposit Zone 💎\n\n"
+        "To make a deposit, click below:\n"
+        "जमा करने के लिए नीचे क्लिक करें:\n"
+        "👉 https://api.waurl.in/r/0nefhia4\n\n"
+        "🚀 Instant Response | तुरंत जवाब | 24×7 Active\n\n"
+        "💸 ⚡ LASER247 Withdrawal Desk ⚡\n\n"
+        "To request a withdrawal, click below:\n"
+        "पैसे निकालने के लिए नीचे क्लिक करें:\n"
+        "👉 https://wa.me/message/L3W6KCQNVSMTP1\n\n"
+        "🔐 Safe & Secure Transactions | सुरक्षित लेन-देन की गारंटी")
+
+    # Message 3 — Customer Support
+    send_tg(row["telegram_id"],
+        "🔴✨ LASER247 CUSTOMER SUPPORT ✨🔴\n\n"
+        "📞 🎧 24×7 Customer Care Service 🎧\n"
+        "For any help or support, contact below:\n"
+        "किसी भी सहायता या जानकारी के लिए नीचे संपर्क करें:\n\n"
+        "👉 https://wa.me/919520668248\n\n"
+        "⚡ Quick Response | तेज जवाब | हमेशा उपलब्ध\n\n"
+        "🛡️ Trusted Support | भरोसेमंद सेवा")
+
     flash(f"✅ ID sent to {row['name']} successfully!", "success")
     return redirect(url_for("payments"))
 
