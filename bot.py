@@ -1,7 +1,10 @@
 import os
 import re
+import io
 import sqlite3
 import qrcode
+import pytesseract
+from PIL import Image
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -70,10 +73,44 @@ def names_match(name1: str, name2: str) -> bool:
     """Case-insensitive partial name match"""
     n1 = name1.strip().lower()
     n2 = name2.strip().lower()
-    # Check if any word matches
     words1 = set(n1.split())
     words2 = set(n2.split())
     return bool(words1 & words2) or n1 in n2 or n2 in n1
+
+
+# ─── QR pe jo naam set hai usse screenshot mein dhundo ───
+PAYEE_NAME = "LaserPanel"   # pn= parameter in QR URL
+
+async def verify_screenshot_ocr(file_id: str, bot) -> bool:
+    """
+    Screenshot download karke OCR karo.
+    Return True agar payment valid lagti hai (PAYEE_NAME ya UPI ID mila),
+    False agar fake slip lag rahi hai.
+    """
+    try:
+        file   = await bot.get_file(file_id)
+        buf    = io.BytesIO()
+        await file.download_to_memory(out=buf)
+        buf.seek(0)
+        img    = Image.open(buf)
+        text   = pytesseract.image_to_string(img).lower()
+
+        upi       = get_upi()
+        # UPI ke pehle wala part (e.g. "9876543210" from "9876543210@okaxis")
+        upi_local = upi.split("@")[0].lower() if "@" in upi else upi.lower()
+
+        payee_lower = PAYEE_NAME.lower()
+
+        # koi bhi keyword mile to valid maano
+        if payee_lower in text or upi_local in text:
+            return True
+        # partial match — pehle 4 chars UPI local
+        if len(upi_local) >= 4 and upi_local[:4] in text:
+            return True
+        return False
+    except Exception:
+        # OCR fail hua to block mat karo (genuine user ko dikkat na ho)
+        return True
 
 
 async def auto_decline(telegram_id: int, name: str, site: str, amount: str,
@@ -297,10 +334,35 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get("step")
 
     if step == "screenshot":
-        context.user_data["screenshot_file_id"] = update.message.photo[-1].file_id
+        file_id = update.message.photo[-1].file_id
+
+        # ── OCR: screenshot check karo ──
+        checking_msg = await update.message.reply_text(
+            "🔍 *Screenshot verify ho rahi hai Sir...*",
+            parse_mode="Markdown",
+        )
+
+        is_valid = await verify_screenshot_ocr(file_id, context.bot)
+
+        await checking_msg.delete()
+
+        if not is_valid:
+            await update.message.reply_text(
+                "❌ *Payment Received Nahi Hua Sir!*\n\n"
+                "Aapki screenshot mein payment details match nahi kar rahi.\n"
+                "*(Fake slip detect hui)*\n\n"
+                "✅ Sahi payment karein aur real screenshot bhejein Sir.\n\n"
+                "Koi problem ho to contact karein 👉 https://wa.me/919520668248\n\n"
+                "_Dobara try karne ke liye /start karein_ 🙏",
+                parse_mode="Markdown",
+            )
+            context.user_data.clear()
+            return
+
+        context.user_data["screenshot_file_id"] = file_id
         context.user_data["step"] = "utr"
         await update.message.reply_text(
-            "✅ *Screenshot mil gayi Sir!*\n\n"
+            "✅ *Screenshot verify ho gayi Sir!*\n\n"
             "🔢 Sir, ab apna *UTR number* type karein.\n"
             "_(Payment ke baad milne wala 12 digit ka number)_",
             parse_mode="Markdown",
