@@ -12,7 +12,7 @@ app.secret_key = os.environ.get("SESSION_SECRET", "laser-panel-secret-2024")
 TOKEN         = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 DEFAULT_UPI   = os.environ.get("UPI_ID", "")
-ADMIN_PASS    = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_PASS    = os.environ.get("ADMIN_PASSWORD") or "Laser@2024"
 SITE_NAME     = "Laser Panel"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
