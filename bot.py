@@ -249,37 +249,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: os.remove(qr_path)
         except: pass
 
-    # ── Step 4: Payment naam verify ──
-    elif step == "payment_name":
-        entered_name   = context.user_data.get("name", "")
-        payment_name   = text
-
-        if not names_match(entered_name, payment_name):
-            # Auto-decline
-            name          = entered_name
-            phone         = context.user_data.get("phone", "")
-            site          = context.user_data.get("site", "")
-            id_type       = context.user_data.get("id_type", "new")
-            amount        = context.user_data.get("amount", "")
-            screenshot_id = context.user_data.get("screenshot_file_id", "")
-            context.user_data.clear()
-
-            await auto_decline(
-                update.effective_chat.id, name, site, amount,
-                screenshot_id, phone, id_type, update.get_bot()
-            )
-            return
-
-        # Names match — UTR maango
-        context.user_data["step"] = "utr"
-        await update.message.reply_text(
-            "✅ *Naam verify ho gaya Sir!*\n\n"
-            "🔢 Sir, ab apna *UTR number* type karein.\n"
-            "_(Payment ke baad milne wala 12 digit ka number)_",
-            parse_mode="Markdown",
-        )
-
-    # ── Step 5: UTR (validate 12 digits) ──
+    # ── Step 4: UTR (validate 12 digits) ──
     elif step == "utr":
         if not is_valid_utr(text):
             await update.message.reply_text(
@@ -328,17 +298,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if step == "screenshot":
         context.user_data["screenshot_file_id"] = update.message.photo[-1].file_id
-        context.user_data["step"] = "payment_name"
+        context.user_data["step"] = "utr"
         await update.message.reply_text(
             "✅ *Screenshot mil gayi Sir!*\n\n"
-            "📝 Sir, payment ke baad aapke bank app ya UPI app mein\n"
-            "*kaun sa naam dikh raha tha?* — wahi naam type karein.",
+            "🔢 Sir, ab apna *UTR number* type karein.\n"
+            "_(Payment ke baad milne wala 12 digit ka number)_",
             parse_mode="Markdown",
         )
 
-    elif step in ("payment_name", "utr"):
+    elif step == "utr":
         await update.message.reply_text(
-            "🙏 Sir, *text mein type karein* — photo nahi.",
+            "🙏 Sir, UTR number *text mein type karein* — photo nahi.",
             parse_mode="Markdown",
         )
 
