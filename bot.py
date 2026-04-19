@@ -1,439 +1,254 @@
 import os
 import sqlite3
 import qrcode
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes,
 )
 
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
-DEFAULT_UPI = os.environ.get("UPI_ID", "")
+DEFAULT_UPI   = os.environ.get("UPI_ID", "")
 
-SITES = ["Laser247", "Tiger399", "AllPanel", "Diamond"]
-
+SITES    = ["Laser247", "Tiger399", "AllPanel", "Diamond"]
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "database.db")
+DB_PATH  = os.path.join(BASE_DIR, "database.db")
 
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
+# ── Database ──────────────────────────────────────────
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db.row_factory = sqlite3.Row
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
+db.execute("""CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER,
-    name TEXT,
-    phone TEXT,
-    site TEXT,
-    id_type TEXT,
-    amount TEXT,
-    utr TEXT,
-    id_pass TEXT,
-    status TEXT DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY,
-    upi TEXT
-)
-""")
-# Migration: add id_pass if missing
-try:
-    cursor.execute("ALTER TABLE users ADD COLUMN id_pass TEXT")
-except Exception:
-    pass
-conn.commit()
+    telegram_id INTEGER, name TEXT, phone TEXT,
+    site TEXT, id_type TEXT, amount TEXT, utr TEXT,
+    id_pass TEXT, status TEXT DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+db.execute("""CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY, upi TEXT)""")
+db.execute("""CREATE TABLE IF NOT EXISTS subadmins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE, password TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+db.execute("INSERT OR IGNORE INTO settings (id,upi) VALUES (1,?)", (DEFAULT_UPI,))
+for col in ["id_pass TEXT","id_type TEXT","utr TEXT","phone TEXT","site TEXT"]:
+    try: db.execute(f"ALTER TABLE users ADD COLUMN {col}")
+    except: pass
+db.commit()
 
 
 def get_upi():
-    row = cursor.execute("SELECT upi FROM settings WHERE id=1").fetchone()
-    return row[0] if row else DEFAULT_UPI
+    r = db.execute("SELECT upi FROM settings WHERE id=1").fetchone()
+    return r["upi"] if r else DEFAULT_UPI
 
 
-def admin_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != ADMIN_CHAT_ID:
-            await update.message.reply_text("⛔ You are not authorized to use this command.")
-            return
-        return await func(update, context)
-    return wrapper
+def notify_admin(text):
+    """Send plain notification to admin Telegram."""
+    import requests
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            json={"chat_id": ADMIN_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=5)
+    except: pass
 
 
-# ─────────────────────────── USER COMMANDS ───────────────────────────
+def save_request(telegram_id, ud, utr):
+    db.execute("""INSERT INTO users
+        (telegram_id,name,phone,site,id_type,amount,utr,status)
+        VALUES (?,?,?,?,?,?,?,'pending')""",
+        (telegram_id, ud.get("name",""), ud.get("phone",""),
+         ud.get("site",""), ud.get("id_type","new"),
+         ud.get("amount",""), utr))
+    db.commit()
+    return db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# ═══════════════════════════════════════════════════════
+#  USER FLOW
+#  /start → New/Demo → Site → Name → Phone → Amount → QR
+#  → User sends UTR (text) or Screenshot → wait 2 min
+#  Admin reviews on web panel → Accept/Decline
+#  Accept → Admin enters ID on panel → Bot sends ID to user
+# ═══════════════════════════════════════════════════════
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    keyboard = [
-        [InlineKeyboardButton("🔥 New ID", callback_data="type:new")],
-        [InlineKeyboardButton("🎮 Demo ID", callback_data="type:demo")],
+    kb = [
+        [InlineKeyboardButton("🆕 New ID",  callback_data="type_new")],
+        [InlineKeyboardButton("🎁 Demo ID", callback_data="type_demo")],
     ]
     await update.message.reply_text(
-        "🙏 Welcome Sir!\nPlease select an option:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        "🙏 *Welcome to Laser Panel!*\n\nPlease select ID type:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb),
     )
 
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
+async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data
 
-    # ── Admin: approve/reject buttons ──
-    if data.startswith("approve:") or data.startswith("reject:"):
-        if update.effective_user.id != ADMIN_CHAT_ID:
-            await query.answer("⛔ Not authorized.", show_alert=True)
-            return
-        action, req_id = data.split(":")
-        await handle_admin_action(query, context, action, int(req_id))
-        return
-
-    # ── User: select type ──
-    if data.startswith("type:"):
-        id_type = data.split(":")[1]
+    if data in ("type_new", "type_demo"):
         context.user_data.clear()
-        context.user_data["type"] = id_type
-        keyboard = [
-            [InlineKeyboardButton(site, callback_data=f"site:{site}")]
-            for site in SITES
-        ]
-        await query.message.reply_text(
-            "📌 Sir, please select your site:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+        context.user_data["id_type"] = "new" if data == "type_new" else "demo"
+        kb = [[InlineKeyboardButton(s, callback_data=f"site_{s}")] for s in SITES]
+        await q.message.reply_text(
+            "🌐 *Select your site:*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb),
         )
 
-    # ── User: select site ──
-    elif data.startswith("site:"):
-        site = data.split(":", 1)[1]
-        context.user_data["site"] = site
-        await query.message.reply_text("👤 Sir, please enter your full name:")
+    elif data.startswith("site_"):
+        context.user_data["site"] = data[5:]
+        context.user_data["step"] = "name"
+        await q.message.reply_text(
+            "👤 *Please enter your full name:*",
+            parse_mode="Markdown",
+        )
 
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.photo:
-        await handle_screenshot(update, context)
-        return
-
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    step = context.user_data.get("step")
 
-    if "site" not in context.user_data:
-        await update.message.reply_text("Please use /start to begin.")
+    if not step:
+        await update.message.reply_text("Please type /start to begin.")
         return
 
-    if "name" not in context.user_data:
+    # ── Step 1: Name ──
+    if step == "name":
         context.user_data["name"] = text
-        await update.message.reply_text("📱 Sir, please enter your phone number:")
+        context.user_data["step"] = "phone"
+        await update.message.reply_text(
+            "📱 *Please enter your phone number:*",
+            parse_mode="Markdown",
+        )
 
-    elif "phone" not in context.user_data:
+    # ── Step 2: Phone ──
+    elif step == "phone":
         context.user_data["phone"] = text
-        await update.message.reply_text("💰 Sir, please enter the deposit amount (₹):")
+        context.user_data["step"] = "amount"
+        await update.message.reply_text(
+            "💰 *Enter deposit amount (₹):*",
+            parse_mode="Markdown",
+        )
 
-    elif "amount" not in context.user_data:
+    # ── Step 3: Amount → Show QR ──
+    elif step == "amount":
         context.user_data["amount"] = text
+        context.user_data["step"] = "utr"
 
-        upi_id = get_upi()
-        upi_url = f"upi://pay?pa={upi_id}&pn=Payment&am={text}&cu=INR"
-        img = qrcode.make(upi_url)
-        img.save("qr.png")
+        upi = get_upi()
+        upi_link = f"upi://pay?pa={upi}&pn=LaserPanel&am={text}&cu=INR"
+        qr_path = os.path.join(BASE_DIR, f"qr_{update.effective_chat.id}.png")
+        qrcode.make(upi_link).save(qr_path)
 
-        await update.message.reply_photo(
-            photo=open("qr.png", "rb"),
+        with open(qr_path, "rb") as f:
+            await update.message.reply_photo(
+                f,
+                caption=(
+                    f"💳 *Pay ₹{text} via UPI*\n\n"
+                    f"📲 UPI ID: `{upi}`\n\n"
+                    f"✅ After payment, send your *UTR number* or *screenshot*."
+                ),
+                parse_mode="Markdown",
+            )
+        try: os.remove(qr_path)
+        except: pass
+
+    # ── Step 4: UTR received → Save & Notify ──
+    elif step == "utr":
+        ud = context.user_data
+        req_id = save_request(update.effective_chat.id, ud, text)
+        context.user_data["step"] = None
+
+        # Tell user to wait
+        await update.message.reply_text(
+            f"✅ *Request Submitted!*\n\n"
+            f"🔢 UTR: `{text}`\n"
+            f"💰 Amount: ₹{ud.get('amount')}\n"
+            f"🌐 Site: {ud.get('site')}\n\n"
+            f"⏳ Please wait *2–5 minutes*.\n"
+            f"We will send your ID once payment is verified. 🙏",
+            parse_mode="Markdown",
+        )
+
+        # Notify admin on Telegram
+        notify_admin(
+            f"🔔 *New Payment Request #{req_id}*\n\n"
+            f"👤 Name: {ud.get('name')}\n"
+            f"📱 Phone: {ud.get('phone')}\n"
+            f"🌐 Site: {ud.get('site')} ({ud.get('id_type','new').upper()})\n"
+            f"💰 Amount: ₹{ud.get('amount')}\n"
+            f"🔢 UTR: {text}\n\n"
+            f"👉 *Go to Admin Panel → Payments to Accept/Decline*"
+        )
+
+
+# ── Screenshot as UTR proof ──────────────────────────
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    step = context.user_data.get("step")
+
+    if step != "utr":
+        await update.message.reply_text("Please type /start to begin.")
+        return
+
+    ud = context.user_data
+    req_id = save_request(update.effective_chat.id, ud, "screenshot")
+    context.user_data["step"] = None
+
+    # Tell user to wait
+    await update.message.reply_text(
+        f"✅ *Screenshot Received!*\n\n"
+        f"💰 Amount: ₹{ud.get('amount')}\n"
+        f"🌐 Site: {ud.get('site')}\n\n"
+        f"⏳ Please wait *2–5 minutes*.\n"
+        f"We will send your ID once payment is verified. 🙏",
+        parse_mode="Markdown",
+    )
+
+    # Forward screenshot to admin with request info
+    try:
+        photo_file_id = update.message.photo[-1].file_id
+        await update.get_bot().send_photo(
+            chat_id=ADMIN_CHAT_ID,
+            photo=photo_file_id,
             caption=(
-                f"💳 Sir, please complete the payment\n\n"
-                f"UPI ID: `{upi_id}`\n"
-                f"Amount: ₹{text}\n\n"
-                f"📸 After payment, first send your *UTR number*, then send the screenshot."
+                f"🔔 *New Request #{req_id}* (Screenshot)\n\n"
+                f"👤 {ud.get('name')} | 📱 {ud.get('phone')}\n"
+                f"🌐 {ud.get('site')} ({ud.get('id_type','new').upper()})\n"
+                f"💰 ₹{ud.get('amount')}\n\n"
+                f"👉 *Admin Panel → Payments to Accept/Decline*"
             ),
             parse_mode="Markdown",
         )
-
-    elif "utr" not in context.user_data:
-        context.user_data["utr"] = text
-        await update.message.reply_text(
-            "📸 Sir, now please send your payment screenshot:"
-        )
-
-    else:
-        await update.message.reply_text(
-            "Please send your payment screenshot (image) now."
+    except Exception:
+        notify_admin(
+            f"🔔 *New Request #{req_id}* (Screenshot)\n\n"
+            f"👤 {ud.get('name')} | 📱 {ud.get('phone')}\n"
+            f"🌐 {ud.get('site')} ({ud.get('id_type','new').upper()})\n"
+            f"💰 ₹{ud.get('amount')}\n\n"
+            f"👉 *Admin Panel → Payments to Accept/Decline*"
         )
 
 
-async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = context.user_data.get("name")
-    phone = context.user_data.get("phone")
-    site = context.user_data.get("site")
-    amount = context.user_data.get("amount")
-    utr = context.user_data.get("utr", "N/A")
-    id_type = context.user_data.get("type", "N/A")
-
-    if not all([name, phone, site, amount]):
-        await update.message.reply_text("Please use /start to begin.")
-        return
-
-    cursor.execute(
-        "INSERT INTO users (telegram_id, name, phone, site, id_type, amount, utr, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (update.effective_user.id, name, phone, site, id_type, amount, utr, "pending"),
-    )
-    conn.commit()
-    req_id = cursor.lastrowid
-
-    await update.message.reply_text(
-        f"✅ Sir, your request has been submitted! (Request #{req_id})\n"
-        f"⏳ Please wait 2-5 minutes for your ID to be activated."
-    )
-
-    # Send to admin with approve/reject buttons
-    photo_file = update.message.photo[-1].file_id
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(f"✅ Approve #{req_id}", callback_data=f"approve:{req_id}"),
-            InlineKeyboardButton(f"❌ Reject #{req_id}", callback_data=f"reject:{req_id}"),
-        ]
-    ])
-
-    await context.bot.send_photo(
-        chat_id=ADMIN_CHAT_ID,
-        photo=photo_file,
-        caption=(
-            f"📥 *New Payment Request #{req_id}*\n\n"
-            f"👤 Name: {name}\n"
-            f"📱 Phone: {phone}\n"
-            f"🌐 Site: {site}\n"
-            f"🎮 Type: {id_type.upper()}\n"
-            f"💰 Amount: ₹{amount}\n"
-            f"🔢 UTR: {utr}\n"
-            f"🆔 Telegram ID: {update.effective_user.id}"
-        ),
-        parse_mode="Markdown",
-        reply_markup=keyboard,
-    )
-
-    context.user_data.clear()
-
-
-# ─────────────────────────── ADMIN ACTION ───────────────────────────
-
-async def handle_admin_action(query, context, action, req_id):
-    row = cursor.execute(
-        "SELECT telegram_id, name, site, amount, status FROM users WHERE id = ?", (req_id,)
-    ).fetchone()
-
-    if not row:
-        await query.edit_message_caption(
-            caption=query.message.caption + f"\n\n⚠️ Request #{req_id} not found.",
-            parse_mode="Markdown",
-        )
-        return
-
-    telegram_id, name, site, amount, current_status = row
-
-    if current_status != "pending":
-        await query.answer(f"Already {current_status}.", show_alert=True)
-        return
-
-    if action == "approve":
-        cursor.execute("UPDATE users SET status = 'approved' WHERE id = ?", (req_id,))
-        conn.commit()
-
-        # Notify user
-        await context.bot.send_message(
-            chat_id=telegram_id,
-            text=(
-                f"🎉 *Congratulations {name} Sir!*\n\n"
-                f"Your payment of ₹{amount} for *{site}* has been *approved*!\n"
-                f"Your ID will be activated shortly. 🚀"
-            ),
-            parse_mode="Markdown",
-        )
-
-        # Update admin message
-        new_caption = query.message.caption + f"\n\n✅ *APPROVED* by admin."
-        await query.edit_message_caption(caption=new_caption, parse_mode="Markdown")
-        await query.answer("✅ Approved and user notified!", show_alert=True)
-
-    elif action == "reject":
-        cursor.execute("UPDATE users SET status = 'rejected' WHERE id = ?", (req_id,))
-        conn.commit()
-
-        # Notify user
-        await context.bot.send_message(
-            chat_id=telegram_id,
-            text=(
-                f"❌ *Dear {name} Sir,*\n\n"
-                f"Your payment request of ₹{amount} for *{site}* has been *rejected*.\n\n"
-                f"Please contact support or try again with /start."
-            ),
-            parse_mode="Markdown",
-        )
-
-        # Update admin message
-        new_caption = query.message.caption + f"\n\n❌ *REJECTED* by admin."
-        await query.edit_message_caption(caption=new_caption, parse_mode="Markdown")
-        await query.answer("❌ Rejected and user notified!", show_alert=True)
-
-
-# ─────────────────────────── ADMIN COMMANDS ───────────────────────────
-
-@admin_only
-async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = cursor.execute(
-        "SELECT id, name, site, amount, status, created_at FROM users ORDER BY id DESC LIMIT 15"
-    ).fetchall()
-
-    if not rows:
-        await update.message.reply_text("No requests yet.")
-        return
-
-    lines = ["📋 *Recent Requests (last 15)*\n"]
-    for r in rows:
-        req_id, name, site, amount, status, created_at = r
-        emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "❓")
-        lines.append(f"{emoji} *#{req_id}* — {name} | {site} | ₹{amount} | {status}")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-@admin_only
-async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = cursor.execute(
-        "SELECT id, name, phone, site, id_type, amount, utr FROM users WHERE status = 'pending' ORDER BY id DESC"
-    ).fetchall()
-
-    if not rows:
-        await update.message.reply_text("✅ No pending requests.")
-        return
-
-    lines = [f"⏳ *{len(rows)} Pending Request(s)*\n"]
-    for r in rows:
-        req_id, name, phone, site, id_type, amount, utr = r
-        lines.append(
-            f"*#{req_id}* — {name} | {phone}\n"
-            f"  🌐 {site} | 🎮 {(id_type or 'N/A').upper()} | ₹{amount} | UTR: {utr}"
-        )
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-@admin_only
-async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /approve <request_id>")
-        return
-    req_id = int(context.args[0])
-
-    row = cursor.execute(
-        "SELECT telegram_id, name, site, amount, status FROM users WHERE id = ?", (req_id,)
-    ).fetchone()
-
-    if not row:
-        await update.message.reply_text(f"❌ Request #{req_id} not found.")
-        return
-
-    telegram_id, name, site, amount, status = row
-    if status != "pending":
-        await update.message.reply_text(f"Request #{req_id} is already {status}.")
-        return
-
-    cursor.execute("UPDATE users SET status = 'approved' WHERE id = ?", (req_id,))
-    conn.commit()
-
-    await context.bot.send_message(
-        chat_id=telegram_id,
-        text=(
-            f"🎉 *Congratulations {name} Sir!*\n\n"
-            f"Your payment of ₹{amount} for *{site}* has been *approved*!\n"
-            f"Your ID will be activated shortly. 🚀"
-        ),
-        parse_mode="Markdown",
-    )
-    await update.message.reply_text(f"✅ Request #{req_id} approved and user notified.")
-
-
-@admin_only
-async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /reject <request_id>")
-        return
-    req_id = int(context.args[0])
-
-    row = cursor.execute(
-        "SELECT telegram_id, name, site, amount, status FROM users WHERE id = ?", (req_id,)
-    ).fetchone()
-
-    if not row:
-        await update.message.reply_text(f"❌ Request #{req_id} not found.")
-        return
-
-    telegram_id, name, site, amount, status = row
-    if status != "pending":
-        await update.message.reply_text(f"Request #{req_id} is already {status}.")
-        return
-
-    cursor.execute("UPDATE users SET status = 'rejected' WHERE id = ?", (req_id,))
-    conn.commit()
-
-    await context.bot.send_message(
-        chat_id=telegram_id,
-        text=(
-            f"❌ *Dear {name} Sir,*\n\n"
-            f"Your payment request of ₹{amount} for *{site}* has been *rejected*.\n\n"
-            f"Please contact support or try again with /start."
-        ),
-        parse_mode="Markdown",
-    )
-    await update.message.reply_text(f"❌ Request #{req_id} rejected and user notified.")
-
-
-@admin_only
-async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    total = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    pending = cursor.execute("SELECT COUNT(*) FROM users WHERE status='pending'").fetchone()[0]
-    approved = cursor.execute("SELECT COUNT(*) FROM users WHERE status='approved'").fetchone()[0]
-    rejected = cursor.execute("SELECT COUNT(*) FROM users WHERE status='rejected'").fetchone()[0]
-    total_amount = cursor.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM users WHERE status='approved'"
-    ).fetchone()[0]
-
-    await update.message.reply_text(
-        f"📊 *Bot Statistics*\n\n"
-        f"📋 Total Requests: {total}\n"
-        f"⏳ Pending: {pending}\n"
-        f"✅ Approved: {approved}\n"
-        f"❌ Rejected: {rejected}\n"
-        f"💰 Total Approved Amount: ₹{total_amount:,.0f}",
-        parse_mode="Markdown",
-    )
-
-
-# ─────────────────────────── MAIN ───────────────────────────
+# ═══════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CallbackQueryHandler(btn_handler))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # User
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_handler(MessageHandler(filters.PHOTO, message_handler))
-
-    # Buttons (user + admin inline)
-    app.add_handler(CallbackQueryHandler(button))
-
-    # Admin commands
-    app.add_handler(CommandHandler("list", cmd_list))
-    app.add_handler(CommandHandler("pending", cmd_pending))
-    app.add_handler(CommandHandler("approve", cmd_approve))
-    app.add_handler(CommandHandler("reject", cmd_reject))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-
-    print("Bot is running...")
-    app.run_polling()
+    print("✅ Laser Panel Bot running...")
+    application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
