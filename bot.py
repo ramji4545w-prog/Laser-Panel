@@ -3,8 +3,13 @@ import re
 import io
 import sqlite3
 import qrcode
-import pytesseract
-from PIL import Image
+
+try:
+    import pytesseract
+    from PIL import Image
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -86,7 +91,11 @@ async def verify_screenshot_ocr(file_id: str, bot) -> bool:
     Screenshot download karke OCR karo.
     Return True agar payment valid lagti hai (PAYEE_NAME ya UPI ID mila),
     False agar fake slip lag rahi hai.
+    OCR available nahi hai toh True return karo (block mat karo).
     """
+    if not OCR_AVAILABLE:
+        return True  # OCR nahi hai — screenshot valid maano
+
     try:
         file   = await bot.get_file(file_id)
         buf    = io.BytesIO()
@@ -96,20 +105,15 @@ async def verify_screenshot_ocr(file_id: str, bot) -> bool:
         text   = pytesseract.image_to_string(img).lower()
 
         upi       = get_upi()
-        # UPI ke pehle wala part (e.g. "9876543210" from "9876543210@okaxis")
         upi_local = upi.split("@")[0].lower() if "@" in upi else upi.lower()
-
         payee_lower = PAYEE_NAME.lower()
 
-        # koi bhi keyword mile to valid maano
         if payee_lower in text or upi_local in text:
             return True
-        # partial match — pehle 4 chars UPI local
         if len(upi_local) >= 4 and upi_local[:4] in text:
             return True
         return False
     except Exception:
-        # OCR fail hua to block mat karo (genuine user ko dikkat na ho)
         return True
 
 

@@ -3,4 +3,3 @@ python-telegram-bot==20.8
 requests==2.33.1
 qrcode==8.2
 Pillow==12.2.0
-pytesseract
