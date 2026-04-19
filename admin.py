@@ -660,6 +660,17 @@ def subusers():
     return render_template_string(BASE_HTML, page_title="Sub Users", active="subusers", content=content)
 
 
+@app.errorhandler(404)
+def not_found(e):
+    return redirect("/admin/login")
+
+
+@app.route("/")
+@app.route("/<path:path>")
+def catch_all(path=""):
+    return redirect("/admin/login")
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
