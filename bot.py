@@ -63,7 +63,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🎮 Demo ID", callback_data="type_demo")],
     ]
     await update.message.reply_text(
-        "🙏 *Welcome to Laser Panel!*\n\nSir, please select an option:",
+        "🙏 *Welcome to Laser Panel!*\n\nSir, aap kaun si ID lena chahenge?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb),
     )
@@ -84,7 +84,9 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["id_type"] = "new"
         context.user_data["step"]    = "name"
         await q.message.reply_text(
-            "✅ *New ID selected!*\n\nSir, please enter your *full name*:",
+            "✅ *New ID selected!*\n\n"
+            "Sir, aapka *poora naam* kya hai?\n"
+            "_(Please apna full name type karein)_",
             parse_mode="Markdown",
         )
 
@@ -95,24 +97,26 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         site_lines = "\n".join(
             [f"{i+1}. [{name}]({url})" for i, (name, url) in enumerate(SITES)]
         )
-        kb = [[InlineKeyboardButton("✅ Yes, Create ID", callback_data="demo_create")]]
+        kb = [[InlineKeyboardButton("✅ Haan, ID Banana Hai", callback_data="demo_create")]]
         await q.message.reply_text(
-            f"🎮 *Demo ID — Available Sites:*\n\n{site_lines}\n\n"
-            f"Sir, click on any site above to visit.\n\n"
-            f"Kya aap ID banana chahte hain?",
+            f"🎮 *Demo ID — Available Sites:*\n\n"
+            f"{site_lines}\n\n"
+            f"Sir, in sites mein se kisi bhi site par click karke dekh sakte hain.\n\n"
+            f"Sir, kya aap ID banana chahte hain?",
             parse_mode="Markdown",
-            disable_web_page_preview=False,
+            disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(kb),
         )
 
     elif data == "demo_create":
         context.user_data["step"] = "name"
         await q.message.reply_text(
-            "🙏 *Sir, please enter your full name:*",
+            "🙏 Sir, aapka *poora naam* kya hai?\n"
+            "_(Please apna full name type karein)_",
             parse_mode="Markdown",
         )
 
-    # ── Site selection (New ID) ──
+    # ── Site selection ──
     elif data.startswith("site_"):
         idx  = int(data.split("_")[1])
         name, url = SITES[idx]
@@ -120,9 +124,9 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["site_url"] = url
         context.user_data["step"]     = "amount"
         await q.message.reply_text(
-            f"✅ *{name}* selected!\n\n"
-            f"Sir, *kitne amount se ID create karni hai?*\n"
-            f"_(Minimum deposit amount enter karein)_",
+            f"✅ *{name}* select ki!\n\n"
+            f"Sir, aap *kitne amount se ID create karna chahte hain?*\n"
+            f"_(Amount in ₹ type karein, jaise: 500)_",
             parse_mode="Markdown",
         )
 
@@ -216,22 +220,21 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["screenshot_file_id"] = update.message.photo[-1].file_id
         context.user_data["step"] = "utr"
         await update.message.reply_text(
-            "✅ *Screenshot received!*\n\n"
-            "🔢 Sir, ab please *UTR number* share karein\n"
-            "_(UTR 12 digit ka transaction number hota hai)_",
+            "✅ *Screenshot mil gayi Sir!*\n\n"
+            "🔢 Sir, ab apna *UTR number* type karein.\n"
+            "_(UTR — jo transaction ke baad milta hai, 12 digit ka number)_",
             parse_mode="Markdown",
         )
 
-    # ── Step: UTR step but photo sent again ──
     elif step == "utr":
         await update.message.reply_text(
-            "Sir, please *UTR number* type karein (text mein). 🙏",
+            "🙏 Sir, UTR number *text mein type* karein — screenshot nahi. 🙏",
             parse_mode="Markdown",
         )
 
     else:
         await update.message.reply_text(
-            "Sir, please type /start to begin. 🙏"
+            "🙏 Sir, /start type karein aur dobara shuru karein."
         )
 
 
@@ -253,17 +256,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get("step")
 
     if not step:
-        await update.message.reply_text("Sir, please type /start to begin. 🙏")
+        await update.message.reply_text(
+            "🙏 Sir, /start type karein aur dobara shuru karein."
+        )
         return
 
+    # ── Step: Name ──
     if step == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "phone"
         await update.message.reply_text(
-            f"✅ Thank you *{text}* Sir!\n\n📱 Sir, please enter your *mobile number*:",
+            f"✅ Shukriya *{text}* Sir!\n\n"
+            f"📱 Sir, aapka *mobile number* kya hai?\n"
+            f"_(10 digit mobile number type karein)_",
             parse_mode="Markdown",
         )
 
+    # ── Step: Phone ──
     elif step == "phone":
         context.user_data["phone"] = text
         context.user_data["step"]  = "site"
@@ -275,12 +284,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [f"{i+1}. [{name}]({url})" for i, (name, url) in enumerate(SITES)]
         )
         await update.message.reply_text(
-            f"✅ Mobile saved!\n\n🌐 *Sir, please select your site:*\n\n{site_lines}",
+            f"✅ Mobile number save ho gaya!\n\n"
+            f"🌐 *Sir, aap konsi site pe ID banana chahte hain?*\n\n"
+            f"{site_lines}\n\n"
+            f"_Neeche button se site select karein Sir:_",
             parse_mode="Markdown",
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(kb),
         )
 
+    # ── Step: Amount → QR ──
     elif step == "amount":
         context.user_data["amount"] = text
         context.user_data["step"]   = "screenshot"
@@ -292,17 +305,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_photo(
                 f,
                 caption=(
-                    f"💳 *Payment Details*\n\n"
+                    f"💳 *Payment Details — Sir*\n\n"
                     f"📲 UPI ID: `{upi}`\n"
                     f"💰 Amount: ₹*{text}*\n\n"
-                    f"Sir, payment complete karein aur\n"
-                    f"📸 *Payment screenshot bhejein*"
+                    f"Sir, upar diya gaya QR scan karke ya UPI ID se\n"
+                    f"payment karein.\n\n"
+                    f"📸 Payment hone ke baad *screenshot bhejein Sir.*"
                 ),
                 parse_mode="Markdown",
             )
         try: os.remove(qr_path)
         except: pass
 
+    # ── Step: UTR ──
     elif step == "utr":
         ud  = context.user_data
         utr = text
@@ -320,18 +335,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Tell user to wait
         await update.message.reply_text(
-            f"✅ *Request Submitted Successfully!*\n\n"
-            f"👤 Name: {ud.get('name')}\n"
+            f"✅ *Request Submit Ho Gayi Sir!*\n\n"
+            f"📋 *Details:*\n"
+            f"👤 Naam: {ud.get('name')} Sir\n"
             f"📱 Mobile: {ud.get('phone')}\n"
             f"🌐 Site: {ud.get('site')}\n"
             f"💰 Amount: ₹{ud.get('amount')}\n"
             f"🔢 UTR: `{utr}`\n\n"
-            f"⏳ Sir, please wait *2-5 minutes*.\n"
-            f"Aapki ID verify hote hi bhej di jayegi. 🙏",
+            f"⏳ *Sir, please 2-5 minute wait karein.*\n"
+            f"Payment verify hote hi aapki ID bhej di jayegi. 🙏\n\n"
+            f"_Thank you for choosing Laser Panel Sir!_ ⚡",
             parse_mode="Markdown",
         )
 
-        # Forward screenshot + info to admin Telegram
+        # Forward to admin
         screenshot_id = ud.get("screenshot_file_id", "")
         caption = (
             f"🔔 *New Payment Request #{req_id}*\n\n"
@@ -341,7 +358,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Amount: ₹{ud.get('amount')}\n"
             f"🔢 UTR: {utr}\n"
             f"🆔 Telegram ID: {update.effective_chat.id}\n\n"
-            f"👉 *Admin Panel → Payments to Accept/Decline*"
+            f"👉 *Admin Panel → Payments*"
         )
         try:
             if screenshot_id:
@@ -362,7 +379,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     else:
         await update.message.reply_text(
-            "Sir, please type /start to begin. 🙏"
+            "🙏 Sir, /start type karein aur dobara shuru karein."
         )
 
 
