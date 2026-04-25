@@ -295,12 +295,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         qr_sent = False
         try:
-            qr_path = os.path.join(BASE_DIR, f"qr_{tid}.png")
-            qrcode.make(upi_url).save(qr_path)
-            with open(qr_path, "rb") as f:
-                await update.message.reply_photo(f, caption=caption, parse_mode="Markdown")
-            try: os.remove(qr_path)
-            except: pass
+            import io
+            buf = io.BytesIO()
+            qrcode.make(upi_url).save(buf, format="PNG")
+            buf.seek(0)
+            await update.message.reply_photo(buf, caption=caption, parse_mode="Markdown")
             qr_sent = True
         except Exception as e:
             print(f"QR error: {e}")
