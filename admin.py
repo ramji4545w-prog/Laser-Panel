@@ -740,12 +740,64 @@ def payments():
         cls = "btn-primary" if p == cur_page else "btn-ghost"
         page_btns += f'<a href="?status={status_filter}&page={p}" class="btn {cls} btn-sm">{p}</a> '
 
+    manual_form = """
+<details style="margin-bottom:18px">
+  <summary style="cursor:pointer;background:var(--card);border:1px solid var(--border);
+    border-radius:10px;padding:12px 18px;font-weight:600;font-size:14px;list-style:none;
+    display:flex;align-items:center;gap:8px">
+    ➕ Manual Payment Entry
+    <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:4px">
+      (Telegram notification se data daalo)
+    </span>
+  </summary>
+  <div style="background:var(--card);border:1px solid var(--border);border-top:none;
+    border-radius:0 0 10px 10px;padding:18px">
+    <form method="POST" action="/admin/payment/manual_add">
+      <div style="display:flex;flex-wrap:wrap;gap:10px">
+        <input name="name" placeholder="Customer Name *" required
+          style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);
+          color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px">
+        <input name="phone" placeholder="Phone Number"
+          style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);
+          color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px">
+        <input name="telegram_id" placeholder="Telegram Chat ID *" required
+          style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);
+          color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px">
+        <select name="site"
+          style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);
+          color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px">
+          <option value="Laser247">Laser247</option>
+          <option value="Tiger399">Tiger399</option>
+          <option value="AllPanel">AllPanel</option>
+          <option value="Diamond">Diamond</option>
+        </select>
+        <select name="id_type"
+          style="flex:1;min-width:100px;background:var(--bg);border:1px solid var(--border);
+          color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px">
+          <option value="new">New ID</option>
+          <option value="demo">Demo ID</option>
+        </select>
+        <input name="amount" placeholder="Amount ₹ *" required
+          style="flex:1;min-width:100px;background:var(--bg);border:1px solid var(--border);
+          color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px">
+        <input name="utr" placeholder="UTR (12 digits) *" required
+          style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);
+          color:var(--text);border-radius:8px;padding:8px 12px;font-size:13px">
+        <button type="submit" class="btn btn-primary btn-sm" style="height:37px;padding:0 20px">
+          ✅ Add Payment
+        </button>
+      </div>
+    </form>
+  </div>
+</details>"""
+
     content = f"""
 <div class="topbar">
   <div class="page-title">Payments <span>Management</span></div>
   <div class="topbar-right">{filter_btns}</div>
 </div>
 {flashes}
+{manual_form}
 <div class="table-wrap"><table>
   <thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Site</th>
     <th>Type</th><th>Amount</th><th>UTR</th><th>Status</th><th>Actions</th></tr></thead>
@@ -795,6 +847,34 @@ def payment_action():
             f"Dobara try karne ke liye /start karein 🙏")
         flash(f"❌ Request #{req_id} declined. User notified.", "success")
 
+    return redirect(url_for("payments"))
+
+
+@app.route("/admin/payment/manual_add", methods=["POST"])
+@login_required
+def payment_manual_add():
+    name        = request.form.get("name","").strip()
+    phone       = request.form.get("phone","").strip()
+    telegram_id = request.form.get("telegram_id","").strip()
+    site        = request.form.get("site","Laser247")
+    id_type     = request.form.get("id_type","new")
+    amount      = request.form.get("amount","").strip()
+    utr         = request.form.get("utr","").strip()
+    if not all([name, telegram_id, amount, utr]):
+        flash("⚠️ Name, Telegram ID, Amount aur UTR zaroori hain.", "error")
+        return redirect(url_for("payments"))
+    try:
+        tid = int(telegram_id)
+    except ValueError:
+        flash("⚠️ Sahi Telegram ID daalo (sirf numbers).", "error")
+        return redirect(url_for("payments"))
+    db.execute(
+        "INSERT INTO users (telegram_id,name,phone,site,id_type,amount,utr,status) VALUES (?,?,?,?,?,?,?,?)",
+        (tid, name, phone, site, id_type, amount, utr, "pending")
+    )
+    db.commit()
+    db.backup_now()
+    flash(f"✅ Payment manually add hua — {name} | ₹{amount} | UTR: {utr}", "success")
     return redirect(url_for("payments"))
 
 
@@ -905,7 +985,8 @@ def registrations():
 @app.route("/admin/chats")
 @admin_only
 def chats():
-    users_list = db.execute("""
+    # Chat logs se customers
+    chat_users = db.execute("""
         SELECT telegram_id,
                MAX(user_name)  AS user_name,
                COUNT(*)        AS msg_count,
@@ -916,6 +997,30 @@ def chats():
         ORDER BY last_time DESC
         LIMIT 100
     """).fetchall()
+
+    # Users table se bhi customers lao (jo chat_logs mein nahi hain)
+    chat_tids = {str(u["telegram_id"]) for u in chat_users}
+    pay_users = db.execute(
+        "SELECT telegram_id, name, created_at FROM users ORDER BY id DESC LIMIT 200"
+    ).fetchall()
+
+    # Merge: sirf wahi add karo jo chat_logs mein nahi hain
+    extra_rows = []
+    seen = set(chat_tids)
+    for u in pay_users:
+        tid = str(u["telegram_id"])
+        if tid not in seen:
+            seen.add(tid)
+            extra_rows.append({
+                "telegram_id": u["telegram_id"],
+                "user_name":   u["name"] or "Unknown",
+                "msg_count":   0,
+                "last_time":   u["created_at"],
+                "last_customer_msg": "💰 Payment request (no chat log)",
+            })
+
+    # Combine — chat_users first (they have logs), then extras
+    users_list = list(chat_users) + extra_rows
 
     rows_html = ""
     for u in users_list:
