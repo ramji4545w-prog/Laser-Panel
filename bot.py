@@ -42,14 +42,16 @@ def get_upi():
 
 
 def log_chat(telegram_id: int, user_name: str, sender: str, message: str):
-    try:
-        db.execute(
-            "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
-            (telegram_id, user_name, sender, message)
-        )
-        db.commit()
-    except Exception:
-        pass
+    def _save():
+        try:
+            db.execute(
+                "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
+                (telegram_id, user_name, sender, message)
+            )
+            db.commit()
+        except Exception as e:
+            print(f"⚠️ log_chat failed tid={telegram_id} sender={sender}: {e}")
+    threading.Thread(target=_save, daemon=True).start()
 
 
 def is_valid_phone(phone: str) -> bool:
