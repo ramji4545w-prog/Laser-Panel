@@ -19,7 +19,8 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
 )
 
-from db import db, cache_log, cache_payment, update_payment_cache, PAYMENT_CACHE
+from db import (db, cache_log, cache_payment, update_payment_cache, PAYMENT_CACHE,
+                save_user_state, load_user_state, clear_user_state)
 
 TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
@@ -179,6 +180,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user  = update.effective_user
     tid   = update.effective_chat.id
     uname = user.full_name or "Unknown"
+    clear_user_state(tid)   # DB se bhi pichla state clear karo
     log_chat(tid, uname, "customer", "/start")
 
     kb = [
@@ -208,6 +210,7 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data["id_type"] = "new"
         context.user_data["step"]    = "name"
+        save_user_state(tid, dict(context.user_data))
         await q.message.reply_text(
             "✅ *New ID select ki!*\n\n"
             "Sir, aapka *poora naam* kya hai?\n"
@@ -218,6 +221,7 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "type_demo":
         context.user_data.clear()
         context.user_data["id_type"] = "demo"
+        save_user_state(tid, dict(context.user_data))
         site_lines = "\n".join(
             [f"{i+1}. [{n}]({u})" for i, (n, u) in enumerate(SITES)]
         )
@@ -234,6 +238,7 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "demo_create":
         context.user_data["step"] = "name"
+        save_user_state(tid, dict(context.user_data))
         await q.message.reply_text(
             "🙏 Sir, aapka *poora naam* kya hai?",
             parse_mode="Markdown",
@@ -244,6 +249,7 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name, url = SITES[idx]
         context.user_data["site"] = name
         context.user_data["step"] = "amount"
+        save_user_state(tid, dict(context.user_data))
         await q.message.reply_text(
             f"✅ *{name}* select ki!\n\n"
             f"Sir, aap *kitne amount se ID banana chahte hain?*\n"
@@ -263,6 +269,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid   = update.effective_chat.id
     uname = context.user_data.get("name") or (update.effective_user.full_name or "Unknown")
 
+    # ── Railway restart ke baad: DB se state restore karo ───────────────────
+    if not step:
+        saved = load_user_state(tid)
+        if saved.get("step"):
+            context.user_data.update(saved)
+            step  = context.user_data.get("step")
+            uname = context.user_data.get("name") or uname
+            print(f"♻️  State restored from DB — tid={tid} step={step}")
+
     log_chat(tid, uname, "customer", text)
 
     if not step:
@@ -275,6 +290,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "phone"
+        save_user_state(tid, dict(context.user_data))   # DB mein save
         await forward_to_admin(update, context, f"Step: Naam → {text}")
         bot_msg = f"✅ Shukriya {text} Sir! — Mobile number kya hai?"
         await update.message.reply_text(
@@ -300,6 +316,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["phone"] = text
         context.user_data["step"]  = "site"
+        save_user_state(tid, dict(context.user_data))   # DB mein save
         await forward_to_admin(update, context, f"Step: Phone → {text}")
         site_lines = "\n".join(
             [f"{i+1}. [{n}]({u})" for i, (n, u) in enumerate(SITES)]
@@ -333,6 +350,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["amount"] = text
         context.user_data["step"]   = "screenshot"
+        save_user_state(tid, dict(context.user_data))   # DB mein save
         upi     = get_upi()
         upi_url = f"upi://pay?pa={upi}&pn=LaserPanel&am={text}&cu=INR"
         caption = (
@@ -379,6 +397,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         utr           = text
 
         context.user_data.clear()
+        clear_user_state(tid)   # DB se conversation state hata do — flow complete
 
         # ── STEP 1: DB mein TURANT save karo (synchronous) ──────────────────
         saved = db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id)
@@ -447,6 +466,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step  = context.user_data.get("step")
     tid   = update.effective_chat.id
     uname = context.user_data.get("name") or (update.effective_user.full_name or "Unknown")
+
+    # Restart ke baad DB se state restore karo
+    if not step:
+        saved = load_user_state(tid)
+        if saved.get("step"):
+            context.user_data.update(saved)
+            step  = context.user_data.get("step")
+            uname = context.user_data.get("name") or uname
 
     if step == "screenshot":
         file_id = update.message.photo[-1].file_id
