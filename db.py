@@ -183,9 +183,10 @@ class Database:
                 url = _DATABASE_URL
                 if url.startswith("postgres://"):
                     url = "postgresql://" + url[11:]
-                self._pg   = psycopg2.connect(url)
-                self.is_pg = True
-                print("✅ Database: PostgreSQL (persistent)")
+                self._pg            = psycopg2.connect(url)
+                self._pg.autocommit = True   # each stmt is its own tx — no failed-tx state ever
+                self.is_pg          = True
+                print("✅ Database: PostgreSQL (persistent, autocommit)")
             except Exception as e:
                 print(f"⚠️  PostgreSQL failed ({e}) — using SQLite+GitHub backup")
 
@@ -224,24 +225,24 @@ class Database:
         url = _DATABASE_URL
         if url.startswith("postgres://"):
             url = "postgresql://" + url[11:]
-        self._pg = self._psycopg2.connect(url)
-        print("✅ PostgreSQL (re)connected")
+        self._pg            = self._psycopg2.connect(url)
+        self._pg.autocommit = True
+        print("✅ PostgreSQL (re)connected, autocommit=True")
 
     def _pg_cursor(self):
-        """Return a fresh cursor, reconnecting if needed."""
+        """Return a fresh cursor, auto-reconnecting if connection is dead."""
         for attempt in range(3):
             try:
                 if self._pg.closed:
                     self._pg_connect()
-                cur = self._pg.cursor(
+                return self._pg.cursor(
                     cursor_factory=self._psycopg2.extras.RealDictCursor)
-                cur.execute("SELECT 1")   # test connection
-                return cur
-            except Exception:
+            except Exception as e:
+                print(f"PG cursor error (attempt {attempt+1}): {e}")
                 try:
                     self._pg_connect()
-                except Exception as e:
-                    print(f"PG reconnect failed ({attempt+1}/3): {e}")
+                except Exception:
+                    pass
         raise RuntimeError("PostgreSQL: could not reconnect after 3 attempts")
 
     # ── Public interface ─────────────────────────────────────────────────────
@@ -255,16 +256,15 @@ class Database:
                     cur.execute(adapted, params or None)
                     return _PgCursor(cur)
                 except self._psycopg2.Error as exc:
-                    try: self._pg.rollback()
-                    except Exception: pass
                     msg = str(exc).lower()
+                    # already-exists errors are harmless (schema setup)
                     if any(k in msg for k in ("already exists","unique","duplicate")):
-                        cur2 = self._pg.cursor(
-                            cursor_factory=self._psycopg2.extras.RealDictCursor)
+                        cur2 = self._pg_cursor()
                         return _PgCursor(cur2)
                     print(f"PG execute error (attempt {attempt+1}): {exc}")
                     if attempt == 2:
                         raise
+                    time.sleep(0.5)
                     try: self._pg_connect()
                     except Exception: pass
         else:
@@ -272,13 +272,8 @@ class Database:
                 return _SqCursor(self._sq.execute(adapted, params))
 
     def commit(self):
-        if self.is_pg:
-            try:
-                self._pg.commit()
-            except Exception:
-                try: self._pg_connect()
-                except Exception: pass
-        else:
+        """Commit — no-op for PostgreSQL (autocommit=True). Commits SQLite."""
+        if not self.is_pg:
             with self._lock:
                 self._sq.commit()
 
