@@ -899,84 +899,141 @@ def registrations():
 
 
 # ══════════════════════════════════════════════════════
-#  CHATS — User wise chat history
+#  CHATS — Customer chat history + manual message
 # ══════════════════════════════════════════════════════
 
 @app.route("/admin/chats")
 @admin_only
 def chats():
     users_list = db.execute("""
-        SELECT telegram_id, MAX(user_name) as user_name,
-               COUNT(*) as msg_count,
-               MAX(created_at) as last_time,
-               MAX(CASE WHEN sender='customer' THEN message END) as last_msg
+        SELECT telegram_id,
+               MAX(user_name)  AS user_name,
+               COUNT(*)        AS msg_count,
+               MAX(created_at) AS last_time,
+               MAX(CASE WHEN sender='customer' THEN message ELSE NULL END) AS last_customer_msg
         FROM chat_logs
         GROUP BY telegram_id
         ORDER BY last_time DESC
+        LIMIT 100
     """).fetchall()
 
     rows_html = ""
     for u in users_list:
-        tid   = u["telegram_id"]
-        name  = u["user_name"] or "Unknown"
-        count = u["msg_count"]
-        t     = fmt_dt(u["last_time"])
-        last  = (u["last_msg"] or "")[:40]
+        tid  = u["telegram_id"]
+        name = u["user_name"] or "Unknown"
+        cnt  = u["msg_count"]
+        t    = fmt_dt(u["last_time"])
+        last = (u["last_customer_msg"] or "")[:50]
         rows_html += f"""
         <a href="/admin/chats/{tid}" style="text-decoration:none">
         <div class="chat-row">
-          <div class="chat-avatar">{name[0].upper()}</div>
+          <div class="chat-avatar">{name[0].upper() if name else "?"}</div>
           <div class="chat-info">
-            <div class="chat-name">{name}</div>
-            <div class="chat-last">{last}...</div>
+            <div class="chat-name">{name}
+              <span style="font-size:11px;color:var(--muted);margin-left:6px">ID: {tid}</span>
+            </div>
+            <div class="chat-last">{last or "—"}</div>
           </div>
           <div class="chat-meta">
             <div class="chat-time">{t}</div>
-            <div class="chat-badge">{count}</div>
+            <div class="chat-badge">{cnt} msgs</div>
           </div>
         </div></a>"""
 
-    empty = '<div style="text-align:center;color:var(--muted);padding:60px">Abhi koi chat nahi hai</div>'
+    # Direct message form (send to any Telegram ID)
+    dm_form = """
+<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
+  padding:18px;margin-bottom:22px">
+  <div style="font-weight:700;font-size:15px;margin-bottom:12px">
+    📤 Kisi bhi Customer ko Direct Message Bhejo
+  </div>
+  <form method="POST" action="/admin/chats/send_direct"
+    style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+    <input name="chat_id" placeholder="Telegram ID (jaise: 123456789)"
+      style="background:var(--bg);border:1px solid var(--border);color:var(--text);
+        border-radius:8px;padding:9px 14px;font-size:14px;width:210px">
+    <textarea name="msg" rows="2" placeholder="Message likhein..."
+      style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);
+        color:var(--text);border-radius:8px;padding:9px 14px;font-size:14px;
+        resize:none;font-family:inherit"></textarea>
+    <button type="submit" class="btn btn-primary" style="height:44px;padding:0 22px;white-space:nowrap">
+      ✉️ Send
+    </button>
+  </form>
+</div>"""
+
+    empty = '<div style="text-align:center;color:var(--muted);padding:60px 20px">'\
+            '<div style="font-size:40px;margin-bottom:12px">💬</div>'\
+            '<div>Abhi koi chat nahi hai.<br>'\
+            '<span style="font-size:13px">Jab customer /start karega toh yahan dikhega.</span></div></div>'
+
     content = f"""
-<div class="page-title">Chats <span>— Customer Chat History</span></div>
 <style>
 .chat-row{{display:flex;align-items:center;gap:14px;padding:14px 16px;background:var(--card);
-  border:1px solid var(--border);border-radius:10px;margin-bottom:8px;
-  cursor:pointer;transition:.2s}}
+  border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer;transition:.2s}}
 .chat-row:hover{{border-color:var(--blue);background:#0f1830}}
 .chat-avatar{{width:46px;height:46px;border-radius:50%;background:var(--blue2);
-  display:flex;align-items:center;justify-content:center;font-size:18px;
-  font-weight:700;color:#fff;flex-shrink:0}}
+  display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0}}
 .chat-info{{flex:1;min-width:0}}
 .chat-name{{font-weight:600;font-size:15px;color:var(--text)}}
 .chat-last{{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}}
 .chat-meta{{text-align:right;flex-shrink:0}}
 .chat-time{{font-size:12px;color:var(--muted)}}
-.chat-badge{{background:var(--blue);color:#fff;border-radius:12px;font-size:11px;
-  padding:2px 8px;margin-top:4px;display:inline-block}}
+.chat-badge{{background:var(--blue);color:#fff;border-radius:12px;font-size:11px;padding:2px 8px;margin-top:4px;display:inline-block}}
 </style>
-{rows_html if rows_html else empty}"""
+<div class="topbar">
+  <div class="page-title">Chats <span>— Customer Messages</span></div>
+  <div class="topbar-right">
+    <span style="color:var(--muted);font-size:13px">{len(users_list)} customers</span>
+  </div>
+</div>
+{dm_form}
+{rows_html if rows_html else empty}
+<script>setTimeout(function(){{location.reload()}}, 30000);</script>"""
     return page("Chats", content, "chats")
+
+
+@app.route("/admin/chats/send_direct", methods=["POST"])
+@admin_only
+def chats_send_direct():
+    chat_id_raw = request.form.get("chat_id","").strip()
+    msg         = request.form.get("msg","").strip()
+    if not chat_id_raw or not msg:
+        flash("⚠️ Telegram ID aur message dono bharo.", "error")
+        return redirect(url_for("chats"))
+    try:
+        cid = int(chat_id_raw)
+    except ValueError:
+        flash("⚠️ Sahi Telegram ID daalo (sirf numbers).", "error")
+        return redirect(url_for("chats"))
+
+    send_tg(cid, msg)
+    try:
+        db.execute(
+            "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
+            (cid, "Direct", "bot", f"[Admin] {msg}")
+        )
+        db.commit()
+    except Exception:
+        pass
+    flash(f"✅ Message bhej diya — ID: {cid}", "success")
+    return redirect(url_for("chats"))
 
 
 @app.route("/admin/chats/<int:tid>")
 @admin_only
 def chat_detail(tid):
-    logs = db.execute(
+    # One combined query for logs + user info
+    logs     = db.execute(
         "SELECT sender, message, created_at FROM chat_logs WHERE telegram_id=? ORDER BY id ASC",
         (tid,)).fetchall()
-
-    # User details from users table (latest record)
     user_row = db.execute(
-        "SELECT * FROM users WHERE telegram_id=? ORDER BY id DESC LIMIT 1", (tid,)
-    ).fetchone()
+        "SELECT name,phone,site,amount,status,utr FROM users WHERE telegram_id=? ORDER BY id DESC LIMIT 1",
+        (tid,)).fetchone()
+    first    = db.execute(
+        "SELECT user_name FROM chat_logs WHERE telegram_id=? LIMIT 1", (tid,)).fetchone()
+    user_name = (first["user_name"] if first else None) or "Unknown"
 
-    user_name = "Unknown"
-    first = db.execute("SELECT user_name FROM chat_logs WHERE telegram_id=? LIMIT 1", (tid,)).fetchone()
-    if first:
-        user_name = first["user_name"] or "Unknown"
-
-    # Customer info card
     phone  = user_row["phone"]  if user_row else "—"
     site   = user_row["site"]   if user_row else "—"
     amount = user_row["amount"] if user_row else "—"
@@ -984,86 +1041,90 @@ def chat_detail(tid):
     utr    = user_row["utr"]    if user_row else "—"
 
     info_card = f"""
-<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
-  <div class="card" style="flex:1;min-width:140px;padding:14px">
-    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">📱 PHONE</div>
-    <div style="font-weight:700;font-size:15px">{phone}</div>
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+  <div class="card" style="flex:1;min-width:120px;padding:12px">
+    <div style="color:var(--muted);font-size:10px">📱 PHONE</div>
+    <div style="font-weight:700;font-size:14px;margin-top:4px">{phone}</div>
   </div>
-  <div class="card" style="flex:1;min-width:140px;padding:14px">
-    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">🌐 SITE</div>
-    <div style="font-weight:700;font-size:15px">{site}</div>
+  <div class="card" style="flex:1;min-width:120px;padding:12px">
+    <div style="color:var(--muted);font-size:10px">🌐 SITE</div>
+    <div style="font-weight:700;font-size:14px;margin-top:4px">{site}</div>
   </div>
-  <div class="card" style="flex:1;min-width:140px;padding:14px">
-    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">💰 AMOUNT</div>
-    <div style="font-weight:700;font-size:15px;color:var(--green)">₹{amount}</div>
+  <div class="card" style="flex:1;min-width:120px;padding:12px">
+    <div style="color:var(--muted);font-size:10px">💰 AMOUNT</div>
+    <div style="font-weight:700;font-size:14px;margin-top:4px;color:var(--green)">₹{amount}</div>
   </div>
-  <div class="card" style="flex:1;min-width:140px;padding:14px">
-    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">🔢 UTR</div>
-    <div style="font-weight:700;font-size:13px">{utr}</div>
+  <div class="card" style="flex:1;min-width:120px;padding:12px">
+    <div style="color:var(--muted);font-size:10px">🔢 UTR</div>
+    <div style="font-weight:700;font-size:13px;margin-top:4px">{utr}</div>
   </div>
-  <div class="card" style="flex:1;min-width:140px;padding:14px">
-    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">📊 STATUS</div>
-    <div style="font-weight:700;font-size:15px">{(status or "—").upper()}</div>
+  <div class="card" style="flex:1;min-width:120px;padding:12px">
+    <div style="color:var(--muted);font-size:10px">📊 STATUS</div>
+    <div style="font-weight:700;font-size:14px;margin-top:4px">{(status or "—").upper()}</div>
   </div>
 </div>"""
 
-    # Chat bubbles
     bubbles = ""
     for log in logs:
-        is_customer = log["sender"] == "customer"
+        is_cust = log["sender"] == "customer"
         t   = fmt_dt(log["created_at"])
-        msg = str(log["message"] or "").replace("<", "&lt;").replace(">", "&gt;")
-        if is_customer:
+        msg = str(log["message"] or "").replace("<","&lt;").replace(">","&gt;")
+        if is_cust:
             bubbles += f"""
-            <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
-              <div style="max-width:72%;background:#1e40af;color:#fff;padding:10px 14px;
-                border-radius:16px 16px 4px 16px;font-size:14px;word-break:break-word">
-                {msg}
-                <div style="font-size:10px;color:rgba(255,255,255,.6);margin-top:4px;text-align:right">{t}</div>
-              </div>
-            </div>"""
+<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+  <div style="max-width:75%;background:#1e40af;color:#fff;padding:10px 14px;
+    border-radius:16px 16px 4px 16px;font-size:14px;word-break:break-word">
+    {msg}
+    <div style="font-size:10px;color:rgba(255,255,255,.55);margin-top:4px;text-align:right">{t}</div>
+  </div>
+</div>"""
         else:
+            label = "🤖 Bot" if not msg.startswith("[Admin]") else "👤 Admin"
+            clean = msg.replace("[Admin] ","")
             bubbles += f"""
-            <div style="display:flex;justify-content:flex-start;margin-bottom:10px">
-              <div style="max-width:72%;background:var(--card);border:1px solid var(--border);
-                color:var(--text);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:14px;word-break:break-word">
-                🤖 {msg}
-                <div style="font-size:10px;color:var(--muted);margin-top:4px">{t}</div>
-              </div>
-            </div>"""
+<div style="display:flex;justify-content:flex-start;margin-bottom:8px">
+  <div style="max-width:75%;background:var(--card);border:1px solid var(--border);
+    color:var(--text);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:14px;word-break:break-word">
+    <span style="font-size:11px;color:var(--muted)">{label}</span><br>{clean}
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">{t}</div>
+  </div>
+</div>"""
 
     empty = '<div style="text-align:center;color:var(--muted);padding:40px">Koi message nahi mila</div>'
-
-    # Reply box
-    reply_box = f"""
-<form method="POST" action="/admin/chats/{tid}/reply"
-  style="display:flex;gap:10px;margin-top:16px;align-items:flex-end">
-  <textarea name="msg" rows="2" placeholder="Customer ko reply likhein..."
-    style="flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);
-      border-radius:10px;padding:10px 14px;font-size:14px;resize:none;font-family:inherit"></textarea>
-  <button type="submit" class="btn btn-primary" style="height:44px;padding:0 20px">
-    ✉️ Send
-  </button>
-</form>"""
 
     content = f"""
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
   <a href="/admin/chats" class="btn btn-ghost btn-sm">← Back</a>
   <div class="page-title" style="margin:0">{user_name}
-    <span style="font-size:13px;color:var(--muted)">Telegram ID: {tid}</span>
+    <span style="font-size:13px;color:var(--muted);margin-left:6px">ID: {tid}</span>
   </div>
 </div>
 {info_card}
-<div style="max-width:720px;margin:0 auto">
+<div style="max-width:740px;margin:0 auto">
   <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
-    padding:20px;max-height:480px;overflow-y:auto" id="chat-box">
+    padding:16px 20px;max-height:500px;overflow-y:auto" id="cb">
     {bubbles if bubbles else empty}
   </div>
-  {reply_box}
+  <form method="POST" action="/admin/chats/{tid}/reply"
+    style="display:flex;gap:10px;margin-top:14px;align-items:flex-end">
+    <textarea name="msg" rows="2" id="reply-box"
+      placeholder="Customer ko reply likhein... (Enter bhejta hai)"
+      style="flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);
+        border-radius:10px;padding:10px 14px;font-size:14px;resize:none;font-family:inherit"></textarea>
+    <button type="submit" class="btn btn-primary" style="height:44px;padding:0 22px">
+      ✉️ Send
+    </button>
+  </form>
 </div>
 <script>
-  var cb = document.getElementById('chat-box');
-  if(cb) cb.scrollTop = cb.scrollHeight;
+  var cb=document.getElementById('cb');
+  if(cb) cb.scrollTop=cb.scrollHeight;
+  // Ctrl+Enter or just Enter to send
+  document.getElementById('reply-box').addEventListener('keydown',function(e){{
+    if(e.key==='Enter' && !e.shiftKey){{e.preventDefault();this.form.submit();}}
+  }});
+  // Auto-refresh every 20 seconds
+  setTimeout(function(){{location.reload()}}, 20000);
 </script>"""
     return page(f"Chat — {user_name}", content, "chats")
 
@@ -1071,18 +1132,20 @@ def chat_detail(tid):
 @app.route("/admin/chats/<int:tid>/reply", methods=["POST"])
 @admin_only
 def chat_reply(tid):
-    msg = request.form.get("msg", "").strip()
-    if msg:
-        send_tg(tid, f"💬 *Admin:* {msg}")
-        # Log the reply in chat_logs
+    msg = request.form.get("msg","").strip()
+    if not msg:
+        flash("⚠️ Kuch likhein pehle!", "error")
+        return redirect(f"/admin/chats/{tid}")
+    send_tg(tid, f"💬 *Admin:* {msg}")
+    try:
         db.execute(
             "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
-            (tid, "Admin", "bot", f"[Admin Reply] {msg}")
+            (tid, "Admin", "bot", f"[Admin] {msg}")
         )
         db.commit()
-        flash("✅ Reply bhej diya!", "success")
-    else:
-        flash("⚠️ Kuch likhein pehle!", "error")
+    except Exception:
+        pass
+    flash("✅ Message bhej diya!", "success")
     return redirect(f"/admin/chats/{tid}")
 
 
