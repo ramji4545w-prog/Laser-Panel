@@ -8,6 +8,22 @@ from flask import (Flask, render_template_string, request,
 from db import db   # shared persistent database (PostgreSQL or SQLite)
 
 app = Flask(__name__)
+
+
+def fmt_dt(val, fmt="datetime"):
+    """Convert SQLite string or PostgreSQL datetime object → formatted string."""
+    if val is None:
+        return ""
+    s = str(val).replace("T", " ")
+    if fmt == "datetime":
+        return s[:16]
+    if fmt == "time":
+        return s[11:16]
+    if fmt == "date":
+        return s[:10]
+    return s[:16]
+
+
 app.secret_key = os.environ.get("SESSION_SECRET", "laser-panel-secret-2024")
 
 TOKEN         = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -512,7 +528,7 @@ def dashboard():
           <td><span class="badge badge-new">{(r["id_type"] or "new").upper()}</span></td>
           <td style="color:var(--green);font-weight:700">₹{r["amount"] or 0}</td>
           <td><span class="badge {badge}">{r["status"].upper()}</span></td>
-          <td style="color:var(--muted);font-size:.77rem">{(r["created_at"] or "")[:16]}</td>
+          <td style="color:var(--muted);font-size:.77rem">{fmt_dt(r["created_at"])}</td>
         </tr>"""
 
     content = f"""
@@ -598,7 +614,7 @@ def today():
           <td style="color:var(--green);font-weight:700">₹{r["amount"] or 0}</td>
           <td style="color:var(--muted);font-size:.8rem">{r["utr"] or "—"}</td>
           <td><span class="badge {badge}">{r["status"].upper()}</span></td>
-          <td style="color:var(--muted);font-size:.77rem">{(r["created_at"] or "")[11:16]}</td>
+          <td style="color:var(--muted);font-size:.77rem">{fmt_dt(r["created_at"], "time")}</td>
         </tr>"""
 
     content = f"""
@@ -838,7 +854,7 @@ def registrations():
           <td><span class="badge badge-new">{(r["id_type"] or "new").upper()}</span></td>
           <td style="color:var(--green);font-weight:700">₹{r["amount"] or 0}</td>
           <td><span class="badge {badge}">{r["status"].upper()}</span></td>
-          <td style="color:var(--muted);font-size:.77rem">{(r["created_at"] or "")[11:16]}</td>
+          <td style="color:var(--muted);font-size:.77rem">{fmt_dt(r["created_at"], "time")}</td>
         </tr>"""
 
     content = f"""
@@ -887,7 +903,7 @@ def chats():
         tid   = u["telegram_id"]
         name  = u["user_name"] or "Unknown"
         count = u["msg_count"]
-        t     = (u["last_time"] or "")[:16].replace("T", " ")
+        t     = fmt_dt(u["last_time"])
         last  = (u["last_msg"] or "")[:40]
         rows_html += f"""
         <a href="/admin/chats/{tid}" style="text-decoration:none">
@@ -978,7 +994,7 @@ def chat_detail(tid):
     bubbles = ""
     for log in logs:
         is_customer = log["sender"] == "customer"
-        t   = (log["created_at"] or "")[:16].replace("T", " ")
+        t   = fmt_dt(log["created_at"])
         msg = str(log["message"] or "").replace("<", "&lt;").replace(">", "&gt;")
         if is_customer:
             bubbles += f"""
@@ -1070,7 +1086,7 @@ def subusers():
           <td style="font-weight:600">{r["name"]}</td>
           <td style="color:var(--muted)">••••••••</td>
           <td><span class="badge badge-new">Payments Only</span></td>
-          <td style="color:var(--muted);font-size:.77rem">{(r["created_at"] or "")[:10]}</td>
+          <td style="color:var(--muted);font-size:.77rem">{fmt_dt(r["created_at"], "date")}</td>
           <td>
             <form method="POST" action="/admin/subusers/delete" style="display:inline">
               <input type="hidden" name="sub_id" value="{r['id']}">
