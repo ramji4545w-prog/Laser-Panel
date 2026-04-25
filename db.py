@@ -413,3 +413,89 @@ def _init_schema():
 
 
 _init_schema()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Startup cache warm-up — DB se data RAM mein load karo (har restart ke baad)
+#  KEY FIX: Refresh karne par bhi chats & payments gayb nahi honge
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _warm_chat_cache():
+    """DB ke saare chat_logs → CHAT_CACHE mein load karo on startup."""
+    try:
+        rows = db.execute(
+            "SELECT telegram_id, user_name, sender, message, created_at "
+            "FROM chat_logs ORDER BY id ASC"
+        ).fetchall()
+        with _CACHE_LOCK:
+            for r in rows:
+                tid   = str(r["telegram_id"])
+                uname = r["user_name"] or "Unknown"
+                # Parse timestamp to HH:MM
+                try:
+                    raw = str(r["created_at"] or "")
+                    ts  = raw[11:16] if (len(raw) >= 16 and (" " in raw or "T" in raw)) else raw[-5:]
+                except Exception:
+                    ts = ""
+                if tid not in CHAT_CACHE:
+                    CHAT_CACHE[tid] = {"user_name": uname, "messages": []}
+                if uname and uname != "Unknown":
+                    CHAT_CACHE[tid]["user_name"] = uname
+                CHAT_CACHE[tid]["messages"].append(
+                    {"sender": r["sender"], "message": r["message"], "ts": ts}
+                )
+            # Trim to last MAX_MSG_PER_USER per user
+            for tid in CHAT_CACHE:
+                msgs = CHAT_CACHE[tid]["messages"]
+                if len(msgs) > MAX_MSG_PER_USER:
+                    CHAT_CACHE[tid]["messages"] = msgs[-MAX_MSG_PER_USER:]
+        n_users = len(CHAT_CACHE)
+        n_msgs  = sum(len(v["messages"]) for v in CHAT_CACHE.values())
+        if n_msgs:
+            print(f"✅ Chat cache warmed: {n_msgs} msgs | {n_users} users")
+    except Exception as e:
+        print(f"⚠️  Chat cache warm-up failed: {e}")
+
+
+def _warm_payment_cache():
+    """DB ke saare users (payments) → PAYMENT_CACHE mein load karo on startup."""
+    try:
+        rows = db.execute(
+            "SELECT id, telegram_id, name, phone, site, id_type, "
+            "amount, utr, status, id_pass, screenshot_file_id, created_at "
+            "FROM users ORDER BY id ASC"
+        ).fetchall()
+        loaded = 0
+        with _PAY_LOCK:
+            for r in rows:
+                cid = str(r["id"])
+                if cid not in PAYMENT_CACHE:
+                    try:
+                        raw = str(r["created_at"] or "")
+                        ts  = raw[:16].replace("T", " ") if len(raw) >= 16 else raw
+                    except Exception:
+                        ts = ""
+                    PAYMENT_CACHE[cid] = {
+                        "cache_id":      cid,
+                        "telegram_id":   r["telegram_id"],
+                        "name":          r["name"]   or "Unknown",
+                        "phone":         r["phone"]  or "",
+                        "site":          r["site"]   or "",
+                        "id_type":       r["id_type"] or "new",
+                        "amount":        str(r["amount"] or ""),
+                        "utr":           r["utr"]    or "",
+                        "status":        r["status"] or "pending",
+                        "id_pass":       r["id_pass"] or "",
+                        "screenshot_id": r["screenshot_file_id"] or "",
+                        "ts":            ts,
+                    }
+                    loaded += 1
+        if loaded:
+            print(f"✅ Payment cache warmed: {loaded} payments")
+    except Exception as e:
+        print(f"⚠️  Payment cache warm-up failed: {e}")
+
+
+# Startup pe dono caches warm karo — DB → RAM
+_warm_chat_cache()
+_warm_payment_cache()
