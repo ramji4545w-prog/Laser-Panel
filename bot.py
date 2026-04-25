@@ -2,6 +2,7 @@ import os
 import re
 import io
 import time
+import threading
 import traceback
 import qrcode
 
@@ -355,29 +356,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot_id = context.user_data.get("screenshot_file_id", "")
         utr           = text
 
-        # DB mein save karo (3 retry ke saath)
-        saved = db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id)
-
-        if not saved:
-            await update.message.reply_text(
-                "⚠️ *Technical problem aa gayi Sir.*\n\n"
-                "Aapka UTR note kar liya hai. Thodi der baad dobara try karein ya\n"
-                "seedha contact karein 👉 https://wa.me/919520668248",
-                parse_mode="Markdown",
-            )
-            return
-
-        # Admin ko notify karo
-        try:
-            await forward_to_admin(update, context,
-                f"✅ NEW PAYMENT REQUEST\n"
-                f"UTR: {utr} | Amount: ₹{amount} | Site: {site}")
-        except Exception as e:
-            print(f"Admin forward error: {e}")
-
         context.user_data.clear()
 
-        # ── Customer ko confirmation message bhejo ──────────────────────────
+        # ── STEP 1: Customer ko message bhejo — DB se pehle ─────────────────
         await update.message.reply_text(
             f"✅ *UTR Receive Ho Gaya Sir!*\n\n"
             f"Dear *{name}* Sir,\n\n"
@@ -387,7 +368,36 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-        log_chat(tid, name, "bot", f"✅ UTR submit — payment verify pending | {site} | ₹{amount} | UTR: {utr}")
+        # ── STEP 2: Admin ko notify karo via Telegram ───────────────────────
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=(
+                    f"🆕 *NEW PAYMENT REQUEST*\n"
+                    f"{'─'*28}\n"
+                    f"👤 Name: *{name}*\n"
+                    f"📱 Phone: {phone}\n"
+                    f"🌐 Site: *{site}*\n"
+                    f"💰 Amount: ₹*{amount}*\n"
+                    f"🔢 UTR: `{utr}`\n"
+                    f"🆔 Type: {id_type.upper()}\n"
+                    f"🤖 Chat ID: `{tid}`\n"
+                    f"{'─'*28}\n"
+                    f"Panel → Payments mein Accept/Decline karein"
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            print(f"Admin notify error: {e}")
+
+        # ── STEP 3: DB mein save karo background mein ───────────────────────
+        def _bg_save():
+            ok = db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id)
+            if not ok:
+                print(f"⚠️ BG save failed — tid={tid} utr={utr}. Manual check needed.")
+        threading.Thread(target=_bg_save, daemon=True).start()
+
+        log_chat(tid, name, "bot", f"✅ UTR {utr} submit — {site} ₹{amount}")
 
     # ── Screenshot step pe text aaya ──────────────────────────────────────────
     elif step == "screenshot":
