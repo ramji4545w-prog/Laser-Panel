@@ -38,9 +38,17 @@ db.execute("INSERT OR IGNORE INTO settings (id,upi) VALUES (1,?)", (DEFAULT_UPI,
 for col in ["id_pass TEXT","id_type TEXT","utr TEXT","phone TEXT","site TEXT"]:
     try: db.execute(f"ALTER TABLE users ADD COLUMN {col}")
     except: pass
+db.execute("""CREATE TABLE IF NOT EXISTS chat_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER,
+    user_name TEXT,
+    sender TEXT,
+    message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
 db.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
 db.execute("CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at)")
 db.execute("CREATE INDEX IF NOT EXISTS idx_users_tgid ON users(telegram_id)")
+db.execute("CREATE INDEX IF NOT EXISTS idx_chat_tgid ON chat_logs(telegram_id)")
 db.commit()
 
 
@@ -327,6 +335,7 @@ ICONS = {
     "users":       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     "user-plus":   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>',
     "settings":    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    "chat":        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
 }
 
 
@@ -344,6 +353,7 @@ def make_nav(active, role):
         items.append('<div class="nav-section">Manage</div>')
         nav("/admin/payments",      "card",      "Payments",       "payments")
         nav("/admin/registrations", "users",     "Registrations",  "registrations")
+        nav("/admin/chats",         "chat",      "Chats",          "chats")
         items.append('<div class="nav-section">Settings</div>')
         nav("/admin/subusers",  "user-plus", "Sub Users",      "subusers")
         nav("/admin/settings",  "settings",  "Settings",       "settings")
@@ -835,6 +845,117 @@ def registrations():
   </tbody>
 </table></div>"""
     return page("Registrations", content, "registrations")
+
+
+# ══════════════════════════════════════════════════════
+#  CHATS — User wise chat history
+# ══════════════════════════════════════════════════════
+
+@app.route("/admin/chats")
+@admin_only
+def chats():
+    users_list = db.execute("""
+        SELECT telegram_id, user_name,
+               COUNT(*) as msg_count,
+               MAX(created_at) as last_time,
+               MAX(CASE WHEN sender='customer' THEN message END) as last_msg
+        FROM chat_logs
+        GROUP BY telegram_id
+        ORDER BY last_time DESC
+    """).fetchall()
+
+    rows_html = ""
+    for u in users_list:
+        tid   = u["telegram_id"]
+        name  = u["user_name"] or "Unknown"
+        count = u["msg_count"]
+        t     = (u["last_time"] or "")[:16].replace("T", " ")
+        last  = (u["last_msg"] or "")[:40]
+        rows_html += f"""
+        <a href="/admin/chats/{tid}" style="text-decoration:none">
+        <div class="chat-row">
+          <div class="chat-avatar">{name[0].upper()}</div>
+          <div class="chat-info">
+            <div class="chat-name">{name}</div>
+            <div class="chat-last">{last}...</div>
+          </div>
+          <div class="chat-meta">
+            <div class="chat-time">{t}</div>
+            <div class="chat-badge">{count}</div>
+          </div>
+        </div></a>"""
+
+    empty = '<div style="text-align:center;color:var(--muted);padding:60px">Abhi koi chat nahi hai</div>'
+    content = f"""
+<div class="page-title">Chats <span>— Customer Chat History</span></div>
+<style>
+.chat-row{{display:flex;align-items:center;gap:14px;padding:14px 16px;background:var(--card);
+  border:1px solid var(--border);border-radius:10px;margin-bottom:8px;
+  cursor:pointer;transition:.2s}}
+.chat-row:hover{{border-color:var(--blue);background:#0f1830}}
+.chat-avatar{{width:46px;height:46px;border-radius:50%;background:var(--blue2);
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+  font-weight:700;color:#fff;flex-shrink:0}}
+.chat-info{{flex:1;min-width:0}}
+.chat-name{{font-weight:600;font-size:15px;color:var(--text)}}
+.chat-last{{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}}
+.chat-meta{{text-align:right;flex-shrink:0}}
+.chat-time{{font-size:12px;color:var(--muted)}}
+.chat-badge{{background:var(--blue);color:#fff;border-radius:12px;font-size:11px;
+  padding:2px 8px;margin-top:4px;display:inline-block}}
+</style>
+{rows_html if rows_html else empty}"""
+    return page("Chats", content, "chats")
+
+
+@app.route("/admin/chats/<int:tid>")
+@admin_only
+def chat_detail(tid):
+    logs = db.execute("""
+        SELECT sender, message, created_at FROM chat_logs
+        WHERE telegram_id=? ORDER BY id ASC
+    """, (tid,)).fetchall()
+
+    user_name = "Unknown"
+    if logs:
+        first = db.execute("SELECT user_name FROM chat_logs WHERE telegram_id=? LIMIT 1", (tid,)).fetchone()
+        if first:
+            user_name = first["user_name"] or "Unknown"
+
+    bubbles = ""
+    for log in logs:
+        is_customer = log["sender"] == "customer"
+        t = (log["created_at"] or "")[:16].replace("T", " ")
+        msg = log["message"] or ""
+        if is_customer:
+            bubbles += f"""
+            <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+              <div style="max-width:70%;background:#1e40af;color:#fff;padding:10px 14px;
+                border-radius:16px 16px 4px 16px;font-size:14px">
+                {msg}
+                <div style="font-size:10px;color:rgba(255,255,255,.6);margin-top:4px;text-align:right">{t}</div>
+              </div>
+            </div>"""
+        else:
+            bubbles += f"""
+            <div style="display:flex;justify-content:flex-start;margin-bottom:10px">
+              <div style="max-width:70%;background:var(--card);border:1px solid var(--border);
+                color:var(--text);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:14px">
+                🤖 {msg}
+                <div style="font-size:10px;color:var(--muted);margin-top:4px">{t}</div>
+              </div>
+            </div>"""
+
+    empty = '<div style="text-align:center;color:var(--muted);padding:60px">Koi message nahi mila</div>'
+    content = f"""
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+  <a href="/admin/chats" class="btn btn-ghost btn-sm">← Back</a>
+  <div class="page-title" style="margin:0">{user_name} <span style="font-size:14px">ID: {tid}</span></div>
+</div>
+<div style="max-width:700px;margin:0 auto;padding:10px 0">
+  {bubbles if bubbles else empty}
+</div>"""
+    return page(f"Chat — {user_name}", content, "chats")
 
 
 # ══════════════════════════════════════════════════════
