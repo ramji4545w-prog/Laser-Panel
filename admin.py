@@ -635,9 +635,9 @@ def today():
 @login_required
 def payments():
     status_filter = request.args.get("status", "all")
-    page = max(1, int(request.args.get("page", 1)))
+    cur_page = max(1, int(request.args.get("page", 1)))
     per_page = 30
-    offset = (page - 1) * per_page
+    offset = (cur_page - 1) * per_page
 
     if status_filter != "all":
         total_rows = db.execute("SELECT COUNT(*) FROM users WHERE status=?", (status_filter,)).fetchone()[0]
@@ -699,7 +699,7 @@ def payments():
     # Pagination buttons — pre-compute outside f-string (Python 3.11 safe)
     page_btns = ""
     for p in range(1, total_pages + 1):
-        cls = "btn-primary" if p == page else "btn-ghost"
+        cls = "btn-primary" if p == cur_page else "btn-ghost"
         page_btns += f'<a href="?status={status_filter}&page={p}" class="btn {cls} btn-sm">{p}</a> '
 
     content = f"""
@@ -719,7 +719,7 @@ def payments():
   {page_btns}
 </div>
 <p style="text-align:center;color:var(--muted);margin-top:8px;font-size:13px;">
-  Showing {len(rows)} of {total_rows} records &nbsp;|&nbsp; Page {page} / {total_pages}
+  Showing {len(rows)} of {total_rows} records &nbsp;|&nbsp; Page {cur_page} / {total_pages}
 </p>"""
     return page("Payments", content, "payments")
 
