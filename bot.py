@@ -113,6 +113,7 @@ async def auto_decline(telegram_id: int, name: str, site: str, amount: str,
         VALUES (?,?,?,?,?,?,?,?,'declined')""",
         (telegram_id, name, phone, site, id_type, amount, "NAME_MISMATCH", screenshot_id))
     db.commit()
+    db.backup_now()
 
     await bot.send_message(
         chat_id=telegram_id,
@@ -325,6 +326,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             VALUES (?,?,?,?,?,?,?,?,'pending')""",
             (tid, name, phone, site, id_type, amount, utr, screenshot_id))
         db.commit()
+        db.backup_now()
         await forward_to_admin(update, context, f"✅ UTR Submit kiya → {utr} | Amount: ₹{amount} | Site: {site}")
         context.user_data.clear()
 
