@@ -217,31 +217,65 @@ class Database:
                 sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
         return sql
 
+    # ── PostgreSQL reconnect ─────────────────────────────────────────────────
+
+    def _pg_connect(self):
+        url = _DATABASE_URL
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[11:]
+        self._pg = self._psycopg2.connect(url)
+        print("✅ PostgreSQL (re)connected")
+
+    def _pg_cursor(self):
+        """Return a fresh cursor, reconnecting if needed."""
+        for attempt in range(3):
+            try:
+                if self._pg.closed:
+                    self._pg_connect()
+                cur = self._pg.cursor(
+                    cursor_factory=self._psycopg2.extras.RealDictCursor)
+                cur.execute("SELECT 1")   # test connection
+                return cur
+            except Exception:
+                try:
+                    self._pg_connect()
+                except Exception as e:
+                    print(f"PG reconnect failed ({attempt+1}/3): {e}")
+        raise RuntimeError("PostgreSQL: could not reconnect after 3 attempts")
+
     # ── Public interface ─────────────────────────────────────────────────────
 
     def execute(self, sql: str, params=()):
         adapted = self._adapt(sql)
         if self.is_pg:
-            cur = self._pg.cursor(
-                cursor_factory=self._psycopg2.extras.RealDictCursor)
-            try:
-                cur.execute(adapted, params or None)
-            except self._psycopg2.Error as exc:
-                self._pg.rollback()
-                msg = str(exc).lower()
-                if not any(k in msg for k in
-                           ("already exists", "unique", "duplicate")):
-                    raise
-                cur = self._pg.cursor(
-                    cursor_factory=self._psycopg2.extras.RealDictCursor)
-            return _PgCursor(cur)
+            for attempt in range(3):
+                try:
+                    cur = self._pg_cursor()
+                    cur.execute(adapted, params or None)
+                    return _PgCursor(cur)
+                except self._psycopg2.Error as exc:
+                    try: self._pg.rollback()
+                    except Exception: pass
+                    msg = str(exc).lower()
+                    if any(k in msg for k in ("already exists","unique","duplicate")):
+                        cur2 = self._pg.cursor(
+                            cursor_factory=self._psycopg2.extras.RealDictCursor)
+                        return _PgCursor(cur2)
+                    print(f"PG execute error (attempt {attempt+1}): {exc}")
+                    if attempt == 2:
+                        raise
+                    try: self._pg_connect()
+                    except Exception: pass
         else:
             return _SqCursor(self._sq.execute(adapted, params))
 
     def commit(self):
-        """Commit transaction. In SQLite mode, also triggers GitHub backup."""
         if self.is_pg:
-            self._pg.commit()
+            try:
+                self._pg.commit()
+            except Exception:
+                try: self._pg_connect()
+                except Exception: pass
         else:
             self._sq.commit()
 
