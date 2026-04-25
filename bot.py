@@ -329,13 +329,26 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot_id = context.user_data.get("screenshot_file_id", "")
         utr           = text
 
-        db.execute("""INSERT INTO users
-            (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
-            VALUES (?,?,?,?,?,?,?,?,'pending')""",
-            (tid, name, phone, site, id_type, amount, utr, screenshot_id))
-        db.commit()
-        db.backup_now()
-        await forward_to_admin(update, context, f"✅ UTR Submit kiya → {utr} | Amount: ₹{amount} | Site: {site}")
+        try:
+            db.execute("""INSERT INTO users
+                (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
+                VALUES (?,?,?,?,?,?,?,?,'pending')""",
+                (tid, name, phone, site, id_type, amount, utr, screenshot_id))
+            db.commit()
+            db.backup_now()
+        except Exception as e:
+            print(f"DB insert error: {e}")
+            await update.message.reply_text(
+                "⚠️ *Server error aa gaya Sir.* Thodi der baad /start karke dobara try karein.",
+                parse_mode="Markdown",
+            )
+            return
+
+        try:
+            await forward_to_admin(update, context, f"✅ UTR Submit kiya → {utr} | Amount: ₹{amount} | Site: {site}")
+        except Exception as e:
+            print(f"Admin forward error: {e}")
+
         context.user_data.clear()
 
         bot_msg = f"✅ Shukriya {name} Sir! — 2-5 min mein ID mil jayegi"
@@ -477,6 +490,20 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ════════════════════════════════════════
 
+async def error_handler(update, context):
+    """Koi bhi unexpected error ho — user ko batao aur log karo."""
+    print(f"Bot error: {context.error}")
+    try:
+        if update and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ *Kuch error aa gaya Sir.* /start karke dobara try karein.",
+                parse_mode="Markdown"
+            )
+    except Exception:
+        pass
+
+
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
@@ -484,6 +511,7 @@ def main():
     app.add_handler(CallbackQueryHandler(btn_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_error_handler(error_handler)
     print("✅ Laser Panel Bot running...")
     app.run_polling(drop_pending_updates=True)
 
