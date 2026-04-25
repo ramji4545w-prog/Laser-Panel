@@ -196,6 +196,11 @@ class Database:
             data_dir       = "/data" if os.path.isdir("/data") else BASE
             self._sq_path  = os.path.join(data_dir, "database.db")
 
+            # ── Try restoring from GitHub Gist before opening SQLite ────────
+            if _GITHUB_TOKEN:
+                self._gist = _GistBackup(_GITHUB_TOKEN, self._sq_path)
+                self._gist.restore()   # restore saved DB from Gist (survives redeploys)
+
             self._sq = sqlite3.connect(
                 self._sq_path,
                 check_same_thread=False,
@@ -206,6 +211,10 @@ class Database:
                       "PRAGMA cache_size=-20000", "PRAGMA temp_store=MEMORY"]:
                 self._sq.execute(p)
             print(f"✅ Database: SQLite ({self._sq_path}, autocommit)")
+
+            # ── Start auto-backup every 3 min ────────────────────────────────
+            if self._gist:
+                self._gist.start_auto_backup(180)
 
     # ── SQL adaptation ───────────────────────────────────────────────────────
 
