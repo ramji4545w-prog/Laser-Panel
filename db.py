@@ -299,6 +299,32 @@ class Database:
 db = Database()
 
 
+# ── In-memory chat cache (shared between bot + admin, survives without DB) ──
+# Structure: {telegram_id: {"user_name": str, "messages": [{"sender","message","ts"}]}}
+import datetime as _dt
+
+CHAT_CACHE: dict = {}
+_CACHE_LOCK = threading.Lock()
+MAX_MSG_PER_USER = 200   # keep last 200 messages per user
+
+
+def cache_log(telegram_id: int, user_name: str, sender: str, message: str):
+    """Save a message to in-memory cache — always works, no DB needed."""
+    tid = str(telegram_id)
+    ts  = _dt.datetime.now().strftime("%H:%M")
+    with _CACHE_LOCK:
+        if tid not in CHAT_CACHE:
+            CHAT_CACHE[tid] = {"user_name": user_name, "messages": []}
+        if user_name and user_name != "Unknown":
+            CHAT_CACHE[tid]["user_name"] = user_name
+        CHAT_CACHE[tid]["messages"].append(
+            {"sender": sender, "message": message, "ts": ts}
+        )
+        # Keep only last MAX_MSG_PER_USER messages
+        if len(CHAT_CACHE[tid]["messages"]) > MAX_MSG_PER_USER:
+            CHAT_CACHE[tid]["messages"] = CHAT_CACHE[tid]["messages"][-MAX_MSG_PER_USER:]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Schema bootstrap
 # ══════════════════════════════════════════════════════════════════════════════
