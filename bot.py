@@ -1,7 +1,6 @@
 import os
 import re
 import io
-import sqlite3
 import qrcode
 
 try:
@@ -17,6 +16,8 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
 )
 
+from db import db   # shared persistent database (PostgreSQL or SQLite)
+
 TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
 DEFAULT_UPI   = os.environ.get("UPI_ID", "")
@@ -27,44 +28,6 @@ SITES = [
     ("AllPanel", "https://allpanelexch9.co/"),
     ("Diamond",  "https://diamondexchenge.com"),
 ]
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Use Railway persistent volume at /data if available, else local
-_DATA_DIR = "/data" if os.path.isdir("/data") else BASE_DIR
-DB_PATH   = os.path.join(_DATA_DIR, "database.db")
-
-db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
-db.row_factory = sqlite3.Row
-db.execute("PRAGMA journal_mode=WAL")
-db.execute("PRAGMA synchronous=NORMAL")
-db.execute("PRAGMA cache_size=-20000")
-db.execute("PRAGMA temp_store=MEMORY")
-
-db.execute("""CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER, name TEXT, phone TEXT,
-    site TEXT, id_type TEXT, amount TEXT, utr TEXT,
-    screenshot_file_id TEXT, id_pass TEXT,
-    status TEXT DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, upi TEXT)")
-db.execute("""CREATE TABLE IF NOT EXISTS subadmins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE, password TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-db.execute("INSERT OR IGNORE INTO settings (id,upi) VALUES (1,?)", (DEFAULT_UPI,))
-db.execute("""CREATE TABLE IF NOT EXISTS chat_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER,
-    user_name TEXT,
-    sender TEXT,
-    message TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-for col in ["id_pass TEXT","id_type TEXT","utr TEXT","phone TEXT",
-            "site TEXT","screenshot_file_id TEXT"]:
-    try: db.execute(f"ALTER TABLE users ADD COLUMN {col}")
-    except: pass
-db.commit()
 
 
 def get_upi():
