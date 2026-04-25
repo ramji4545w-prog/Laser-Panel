@@ -47,6 +47,13 @@ db.execute("""CREATE TABLE IF NOT EXISTS subadmins (
     name TEXT NOT NULL UNIQUE, password TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
 db.execute("INSERT OR IGNORE INTO settings (id,upi) VALUES (1,?)", (DEFAULT_UPI,))
+db.execute("""CREATE TABLE IF NOT EXISTS chat_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER,
+    user_name TEXT,
+    sender TEXT,
+    message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
 for col in ["id_pass TEXT","id_type TEXT","utr TEXT","phone TEXT",
             "site TEXT","screenshot_file_id TEXT"]:
     try: db.execute(f"ALTER TABLE users ADD COLUMN {col}")
@@ -57,6 +64,18 @@ db.commit()
 def get_upi():
     r = db.execute("SELECT upi FROM settings WHERE id=1").fetchone()
     return r["upi"] if r else DEFAULT_UPI
+
+
+def log_chat(telegram_id: int, user_name: str, sender: str, message: str):
+    """Chat message database mein save karo"""
+    try:
+        db.execute(
+            "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
+            (telegram_id, user_name, sender, message)
+        )
+        db.commit()
+    except Exception:
+        pass
 
 
 def is_valid_phone(phone: str) -> bool:
@@ -145,16 +164,22 @@ async def auto_decline(telegram_id: int, name: str, site: str, amount: str,
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
+    user = update.effective_user
+    tid  = update.effective_chat.id
+    uname = user.full_name or "Unknown"
+    log_chat(tid, uname, "customer", "/start")
     kb = [
         [InlineKeyboardButton("🆕 New ID",  callback_data="type_new")],
         [InlineKeyboardButton("🎮 Demo ID", callback_data="type_demo")],
     ]
+    bot_msg = "🙏 Laser Panel mein aapka swagat hai Sir! — ID type select karein"
     await update.message.reply_text(
         "🙏 *Laser Panel mein aapka swagat hai Sir!*\n\n"
         "Sir, aap kaun si ID lena chahenge?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb),
     )
+    log_chat(tid, uname, "bot", bot_msg)
 
 
 # ════════════════════════════════════════
@@ -231,6 +256,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "phone"
+        await forward_to_admin(update, context, f"Step: Naam diya → {text}")
         await update.message.reply_text(
             f"✅ Shukriya *{text}* Sir!\n\n"
             f"📱 Sir, aapka *mobile number* kya hai?",
@@ -250,6 +276,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["phone"] = text
         context.user_data["step"]  = "site"
+        await forward_to_admin(update, context, f"Step: Phone diya → {text}")
         site_lines = "\n".join(
             [f"{i+1}. [{n}]({u})" for i, (n, u) in enumerate(SITES)]
         )
@@ -315,6 +342,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             VALUES (?,?,?,?,?,?,?,?,'pending')""",
             (update.effective_chat.id, name, phone, site, id_type, amount, utr, screenshot_id))
         db.commit()
+        await forward_to_admin(update, context, f"✅ UTR Submit kiya → {utr} | Amount: ₹{amount} | Site: {site}")
         context.user_data.clear()
 
         await update.message.reply_text(
@@ -385,12 +413,74 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ════════════════════════════════════════
+#  ADMIN KO FORWARD KARO
+# ════════════════════════════════════════
+
+async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, extra: str = ""):
+    """Customer ka message admin ko forward karo"""
+    try:
+        user     = update.effective_user
+        chat_id  = update.effective_chat.id
+        name     = user.full_name or "Unknown"
+        username = f"@{user.username}" if user.username else "no username"
+
+        header = (
+            f"👤 *Customer Message*\n"
+            f"Name: {name} ({username})\n"
+            f"Chat ID: `{chat_id}`\n"
+            f"_{extra}_\n"
+            f"{'─'*25}"
+        )
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=header,
+            parse_mode="Markdown"
+        )
+        # Original message forward
+        await update.message.forward(chat_id=ADMIN_CHAT_ID)
+    except Exception:
+        pass  # Admin forward fail hua to customer flow mat rokho
+
+
+# ════════════════════════════════════════
+#  /reply COMMAND — Admin customer ko reply de
+# ════════════════════════════════════════
+
+async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sirf admin use kar sakta hai: /reply <chat_id> <message>"""
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        return
+
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "⚠️ Format: `/reply <chat_id> <message>`\n\n"
+            "Example: `/reply 123456789 Aapki ID ready hai Sir!`",
+            parse_mode="Markdown"
+        )
+        return
+
+    target_id = args[0]
+    message   = " ".join(args[1:])
+
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_id),
+            text=f"💬 {message}"
+        )
+        await update.message.reply_text(f"✅ Message bhej diya `{target_id}` ko!", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+# ════════════════════════════════════════
 #  MAIN
 # ════════════════════════════════════════
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("reply", cmd_reply))
     app.add_handler(CallbackQueryHandler(btn_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
