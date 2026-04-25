@@ -4,10 +4,14 @@ from datetime import date
 from functools import wraps
 from flask import (Flask, render_template_string, request,
                    redirect, url_for, session, jsonify, flash)
+from flask_compress import Compress
 
 from db import db   # shared persistent database (PostgreSQL or SQLite)
 
 app = Flask(__name__)
+
+# ── Gzip compression — reduces page size ~70% ─────────────────────────────
+Compress(app)
 
 
 def fmt_dt(val, fmt="datetime"):
@@ -424,6 +428,12 @@ def get_flashes():
 #  LOGIN / LOGOUT
 # ══════════════════════════════════════════════════════
 
+@app.route("/ping")
+def ping():
+    """Health check — keeps Railway app alive, responds instantly."""
+    return "ok", 200
+
+
 @app.route("/")
 def root():
     if session.get("logged_in") and session.get("role") == "admin":
@@ -503,16 +513,23 @@ def logout():
 @admin_only
 def dashboard():
     today_str = date.today().isoformat()
-    total_users  = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    total_amount = db.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)),0) FROM users WHERE status='accepted'"
-    ).fetchone()[0]
-    today_dep = db.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)),0) FROM users WHERE status='accepted' AND DATE(created_at)=?",
-        (today_str,)
-    ).fetchone()[0]
-    today_reg   = db.execute("SELECT COUNT(*) FROM users WHERE DATE(created_at)=?", (today_str,)).fetchone()[0]
-    pending_cnt = db.execute("SELECT COUNT(*) FROM users WHERE status='pending'").fetchone()[0]
+
+    # Single query for all stats
+    stats = db.execute("""
+        SELECT
+          COUNT(*) AS total_users,
+          COALESCE(SUM(CASE WHEN status='accepted' THEN CAST(amount AS REAL) ELSE 0 END),0) AS total_amount,
+          COALESCE(SUM(CASE WHEN status='accepted' AND DATE(created_at)=? THEN CAST(amount AS REAL) ELSE 0 END),0) AS today_dep,
+          COUNT(CASE WHEN DATE(created_at)=? THEN 1 END) AS today_reg,
+          COUNT(CASE WHEN status='pending' THEN 1 END) AS pending_cnt
+        FROM users
+    """, (today_str, today_str)).fetchone()
+
+    total_users  = stats["total_users"]  if stats else 0
+    total_amount = stats["total_amount"] if stats else 0
+    today_dep    = stats["today_dep"]    if stats else 0
+    today_reg    = stats["today_reg"]    if stats else 0
+    pending_cnt  = stats["pending_cnt"]  if stats else 0
 
     rows = db.execute(
         "SELECT id,name,site,id_type,amount,status,created_at FROM users ORDER BY id DESC LIMIT 10"
