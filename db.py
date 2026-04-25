@@ -197,12 +197,15 @@ class Database:
             self._sq_path  = os.path.join(data_dir, "database.db")
 
             self._sq = sqlite3.connect(
-                self._sq_path, check_same_thread=False, timeout=10)
+                self._sq_path,
+                check_same_thread=False,
+                timeout=20,
+                isolation_level=None)   # autocommit — no locking issues across threads
             self._sq.row_factory = sqlite3.Row
             for p in ["PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL",
                       "PRAGMA cache_size=-20000", "PRAGMA temp_store=MEMORY"]:
                 self._sq.execute(p)
-            print(f"✅ Database: SQLite ({self._sq_path})")
+            print(f"✅ Database: SQLite ({self._sq_path}, autocommit)")
 
     # ── SQL adaptation ───────────────────────────────────────────────────────
 
