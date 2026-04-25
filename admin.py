@@ -19,8 +19,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "database.db")
 
 # ── Database ──────────────────────────────────────────
-db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
 db.row_factory = sqlite3.Row
+db.execute("PRAGMA journal_mode=WAL")
+db.execute("PRAGMA synchronous=NORMAL")
+db.execute("PRAGMA cache_size=-20000")
+db.execute("PRAGMA temp_store=MEMORY")
 
 db.execute("""CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1193,4 +1197,4 @@ def api_send_message():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
