@@ -173,6 +173,7 @@ class Database:
         self._sq_path = ""
         self._gist   = None
         self.is_pg   = False
+        self._lock   = threading.Lock()   # SQLite thread-safety
 
         # ── Try PostgreSQL ───────────────────────────────────────────────────
         if _DATABASE_URL:
@@ -267,7 +268,8 @@ class Database:
                     try: self._pg_connect()
                     except Exception: pass
         else:
-            return _SqCursor(self._sq.execute(adapted, params))
+            with self._lock:
+                return _SqCursor(self._sq.execute(adapted, params))
 
     def commit(self):
         if self.is_pg:
@@ -277,7 +279,8 @@ class Database:
                 try: self._pg_connect()
                 except Exception: pass
         else:
-            self._sq.commit()
+            with self._lock:
+                self._sq.commit()
 
     def backup_now(self):
         """Immediate GitHub backup (call after important data changes)."""
