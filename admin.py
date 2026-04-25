@@ -696,6 +696,12 @@ def payments():
           <td style="min-width:200px">{actions}</td>
         </tr>"""
 
+    # Pagination buttons — pre-compute outside f-string (Python 3.11 safe)
+    page_btns = ""
+    for p in range(1, total_pages + 1):
+        cls = "btn-primary" if p == page else "btn-ghost"
+        page_btns += f'<a href="?status={status_filter}&page={p}" class="btn {cls} btn-sm">{p}</a> '
+
     content = f"""
 <div class="topbar">
   <div class="page-title">Payments <span>Management</span></div>
@@ -710,7 +716,7 @@ def payments():
   </tbody>
 </table></div>
 <div style="display:flex;gap:8px;justify-content:center;margin-top:20px;flex-wrap:wrap;">
-{"".join([f'<a href="?status={status_filter}&page={p}" class="btn ' + ("btn-primary" if p==page else "btn-ghost") + f' btn-sm">{p}</a>' for p in range(1, total_pages+1)])}
+  {page_btns}
 </div>
 <p style="text-align:center;color:var(--muted);margin-top:8px;font-size:13px;">
   Showing {len(rows)} of {total_rows} records &nbsp;|&nbsp; Page {page} / {total_pages}
