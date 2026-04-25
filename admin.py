@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from datetime import date
 from functools import wraps
@@ -6,7 +7,8 @@ from flask import (Flask, render_template_string, request,
                    redirect, url_for, session, jsonify, flash)
 from flask_compress import Compress
 
-from db import db, CHAT_CACHE, cache_log, _CACHE_LOCK   # shared DB + in-memory chat cache
+from db import (db, CHAT_CACHE, cache_log, _CACHE_LOCK,      # chat cache
+                PAYMENT_CACHE, _PAY_LOCK, cache_payment, update_payment_cache)  # payment cache
 
 app = Flask(__name__)
 
@@ -732,74 +734,134 @@ def today():
 #  PAYMENTS
 # ══════════════════════════════════════════════════════
 
+def _merged_payments(status_filter="all"):
+    """
+    Merge PAYMENT_CACHE (primary) + DB (fallback).
+    Returns list of dicts sorted newest-first.
+    DB-backed IDs = numeric str; cache-only IDs = 'c_...'
+    """
+    merged = {}  # cache_id_str → entry dict
+
+    # 1. In-memory cache first (bot saves here on every payment submit)
+    with _PAY_LOCK:
+        for cid, entry in PAYMENT_CACHE.items():
+            merged[cid] = dict(entry)
+
+    # 2. DB entries — add those NOT already in cache
+    try:
+        for r in db.execute("SELECT * FROM users ORDER BY id DESC LIMIT 500").fetchall():
+            cid = str(r["id"])
+            if cid not in merged:
+                merged[cid] = {
+                    "cache_id":    cid,
+                    "telegram_id": r["telegram_id"],
+                    "name":        r["name"] or "Unknown",
+                    "phone":       r["phone"] or "",
+                    "site":        r["site"] or "",
+                    "id_type":     r["id_type"] or "new",
+                    "amount":      str(r["amount"] or ""),
+                    "utr":         r["utr"] or "",
+                    "status":      r["status"] or "pending",
+                    "id_pass":     r["id_pass"] or "",
+                    "ts":          fmt_dt(r["created_at"]),
+                }
+            else:
+                # sync accept/decline from DB into cache
+                merged[cid]["status"]  = r["status"] or merged[cid].get("status","pending")
+                merged[cid]["id_pass"] = r["id_pass"] or merged[cid].get("id_pass","")
+    except Exception:
+        pass
+
+    rows = list(merged.values())
+    if status_filter != "all":
+        rows = [r for r in rows if r.get("status") == status_filter]
+
+    def _sort_key(e):
+        cid = e.get("cache_id","")
+        if cid.startswith("c_"):
+            return (0, e.get("ts",""))
+        try: return (0, str(-int(cid)).zfill(12))
+        except: return (0, e.get("ts",""))
+    rows.sort(key=_sort_key, reverse=True)
+    return rows
+
+
+def _payment_actions_html(r):
+    cid    = r["cache_id"]
+    status = r.get("status","pending")
+    if status == "pending":
+        return f"""
+<form method="POST" action="/admin/payment/action" style="display:inline">
+  <input type="hidden" name="req_id" value="{cid}">
+  <input type="hidden" name="action" value="accept">
+  <button type="submit" class="btn btn-success btn-sm">✓ Accept</button>
+</form>
+<form method="POST" action="/admin/payment/action" style="display:inline;margin-left:5px">
+  <input type="hidden" name="req_id" value="{cid}">
+  <input type="hidden" name="action" value="decline">
+  <button type="submit" class="btn btn-danger btn-sm">✗ Decline</button>
+</form>"""
+    elif status == "accepted":
+        sent = (f'<div style="color:var(--green);font-size:.77rem;margin-bottom:4px">✓ ID Sent: {r["id_pass"]}</div>'
+                if r.get("id_pass") else "")
+        return f"""{sent}
+<form method="POST" action="/admin/payment/send_id"
+  style="display:flex;gap:6px;align-items:center;margin-top:4px">
+  <input type="hidden" name="req_id" value="{cid}">
+  <input name="id_pass" placeholder="ID:Password" value="{r.get('id_pass','')}"
+    style="background:var(--bg);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;padding:5px 10px;font-size:12px;width:130px">
+  <button type="submit" class="btn btn-primary btn-sm">📤 Send</button>
+</form>"""
+    else:
+        return '<span style="color:var(--muted);font-size:.8rem">—</span>'
+
+
 @app.route("/admin/payments")
 @login_required
 def payments():
     status_filter = request.args.get("status", "all")
-    cur_page = max(1, int(request.args.get("page", 1)))
-    per_page = 30
-    offset = (cur_page - 1) * per_page
-
-    if status_filter != "all":
-        total_rows = db.execute("SELECT COUNT(*) FROM users WHERE status=?", (status_filter,)).fetchone()[0]
-        rows = db.execute("SELECT * FROM users WHERE status=? ORDER BY id DESC LIMIT ? OFFSET ?",
-                          (status_filter, per_page, offset)).fetchall()
-    else:
-        total_rows = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        rows = db.execute("SELECT * FROM users ORDER BY id DESC LIMIT ? OFFSET ?",
-                          (per_page, offset)).fetchall()
-
-    total_pages = max(1, (total_rows + per_page - 1) // per_page)
-
     flashes = get_flashes()
+
+    filter_btns = ""
+    all_rows = _merged_payments(status_filter)
+    total    = len(all_rows)
+
+    per_page = 30
+    cur_page = max(1, int(request.args.get("page", 1)))
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    rows = all_rows[(cur_page-1)*per_page : cur_page*per_page]
 
     filter_btns = ""
     for val, label, ico in [("all","All","📋"),("pending","Pending","⏳"),
                               ("accepted","Accepted","✅"),("declined","Declined","❌")]:
         cls = "btn-primary" if status_filter == val else "btn-ghost"
-        filter_btns += f'<a href="?status={val}" class="btn {cls} btn-sm">{ico} {label}</a> '
+        cnt = len(_merged_payments(val)) if val != "all" else total
+        badge_s = (f' <span style="background:#1e40af;color:#fff;border-radius:10px;'
+                   f'padding:1px 7px;font-size:11px">{cnt}</span>') if cnt else ""
+        filter_btns += f'<a href="?status={val}" class="btn {cls} btn-sm">{ico} {label}{badge_s}</a> '
 
+    badge_cls = {"pending":"badge-pending","accepted":"badge-accepted","declined":"badge-declined"}
     rows_html = ""
     for r in rows:
-        badge  = {"pending":"badge-pending","accepted":"badge-accepted","declined":"badge-declined"}.get(r["status"],"badge-pending")
-        if r["status"] == "pending":
-            actions = f"""
-              <form method="POST" action="/admin/payment/action" style="display:inline">
-                <input type="hidden" name="req_id" value="{r['id']}">
-                <input type="hidden" name="action" value="accept">
-                <button type="submit" class="btn btn-success btn-sm">✓ Accept</button>
-              </form>
-              <form method="POST" action="/admin/payment/action" style="display:inline;margin-left:5px">
-                <input type="hidden" name="req_id" value="{r['id']}">
-                <input type="hidden" name="action" value="decline">
-                <button type="submit" class="btn btn-danger btn-sm">✗ Decline</button>
-              </form>"""
-        elif r["status"] == "accepted":
-            sent = f'<div style="color:var(--green);font-size:.77rem;margin-bottom:4px">✓ ID: {r["id_pass"]}</div>' if r["id_pass"] else ""
-            actions = f"""{sent}
-              <form method="POST" action="/admin/payment/send_id" class="id-form">
-                <input type="hidden" name="req_id" value="{r['id']}">
-                <input name="id_pass" placeholder="ID : Password" value="{r['id_pass'] or ''}">
-                <button type="submit" class="btn btn-primary btn-sm">📤 Send</button>
-              </form>"""
-        else:
-            actions = '<span style="color:var(--muted);font-size:.8rem">—</span>'
-
+        badge   = badge_cls.get(r.get("status","pending"), "badge-pending")
+        actions = _payment_actions_html(r)
+        cid     = r["cache_id"]
+        src     = "🟢" if cid.startswith("c_") else f"#{cid}"
         rows_html += f"""<tr>
-          <td style="color:var(--muted)">#{r["id"]}</td>
-          <td style="font-weight:600">{r["name"] or "—"}</td>
-          <td style="color:var(--muted);font-size:.82rem">{r["phone"] or "—"}</td>
-          <td>{r["site"] or "—"}</td>
-          <td><span class="badge badge-new">{(r["id_type"] or "new").upper()}</span></td>
-          <td style="color:var(--green);font-weight:700">₹{r["amount"] or 0}</td>
-          <td style="color:var(--muted);font-size:.79rem">{r["utr"] or "—"}</td>
-          <td><span class="badge {badge}">{r["status"].upper()}</span></td>
-          <td style="min-width:200px">{actions}</td>
-        </tr>"""
+  <td style="color:var(--muted);font-size:12px">{src}</td>
+  <td style="font-weight:600">{r['name']}</td>
+  <td style="color:var(--muted);font-size:.82rem">{r.get('phone') or '—'}</td>
+  <td>{r.get('site') or '—'}</td>
+  <td><span class="badge badge-new">{(r.get('id_type') or 'new').upper()}</span></td>
+  <td style="color:var(--green);font-weight:700">₹{r.get('amount') or 0}</td>
+  <td style="color:var(--muted);font-size:.79rem">{r.get('utr') or '—'}</td>
+  <td><span class="badge {badge}">{(r.get('status','pending')).upper()}</span></td>
+  <td style="min-width:230px">{actions}</td>
+</tr>"""
 
-    # Pagination buttons — pre-compute outside f-string (Python 3.11 safe)
     page_btns = ""
-    for p in range(1, total_pages + 1):
+    for p in range(1, total_pages+1):
         cls = "btn-primary" if p == cur_page else "btn-ghost"
         page_btns += f'<a href="?status={status_filter}&page={p}" class="btn {cls} btn-sm">{p}</a> '
 
@@ -862,53 +924,91 @@ def payments():
 {flashes}
 {manual_form}
 <div class="table-wrap"><table>
-  <thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Site</th>
-    <th>Type</th><th>Amount</th><th>UTR</th><th>Status</th><th>Actions</th></tr></thead>
+  <thead><tr>
+    <th>#</th><th>Name</th><th>Phone</th><th>Site</th>
+    <th>Type</th><th>Amount</th><th>UTR</th><th>Status</th>
+    <th style="min-width:230px">Actions</th>
+  </tr></thead>
   <tbody>
-    {rows_html if rows_html else '<tr><td colspan="9" class="empty">No payments found</td></tr>'}
+    {rows_html if rows_html else
+     '<tr><td colspan="9" class="empty">No payments found — jab customer UTR bhejega yahan turant dikhega ⏳</td></tr>'}
   </tbody>
 </table></div>
-<div style="display:flex;gap:8px;justify-content:center;margin-top:20px;flex-wrap:wrap;">
-  {page_btns}
-</div>
+<div style="display:flex;gap:8px;justify-content:center;margin-top:20px;flex-wrap:wrap;">{page_btns}</div>
 <p style="text-align:center;color:var(--muted);margin-top:8px;font-size:13px;">
-  Showing {len(rows)} of {total_rows} records &nbsp;|&nbsp; Page {cur_page} / {total_pages}
-</p>"""
+  Showing {len(rows)} of {total} records | Page {cur_page}/{total_pages}
+  &nbsp;|&nbsp; <span style="color:var(--green)">🟢 live cache</span>
+</p>
+<script>setTimeout(function(){{location.reload()}},30000);</script>"""
     return page("Payments", content, "payments")
 
 
 @app.route("/admin/payment/action", methods=["POST"])
 @login_required
 def payment_action():
-    req_id = int(request.form.get("req_id", 0))
-    action = request.form.get("action")
-    row = db.execute("SELECT * FROM users WHERE id=?", (req_id,)).fetchone()
-    if not row:
-        flash("Request not found.", "error"); return redirect(url_for("payments"))
-    if row["status"] != "pending":
-        flash(f"Already {row['status']}.", "error"); return redirect(url_for("payments"))
+    req_id = request.form.get("req_id","").strip()
+    action = request.form.get("action","")
+    is_cache_only = req_id.startswith("c_")
+
+    # Get the payment entry (from cache or DB)
+    entry = None
+    with _PAY_LOCK:
+        entry = dict(PAYMENT_CACHE.get(req_id, {}))
+
+    if not entry and not is_cache_only:
+        # Try DB
+        try:
+            row = db.execute("SELECT * FROM users WHERE id=?", (int(req_id),)).fetchone()
+            if row:
+                entry = {"telegram_id": row["telegram_id"], "name": row["name"],
+                         "amount": row["amount"], "site": row["site"],
+                         "status": row["status"], "cache_id": req_id}
+        except Exception: pass
+
+    if not entry:
+        flash("⚠️ Payment request nahi mila.", "error")
+        return redirect(url_for("payments"))
+
+    if entry.get("status") != "pending":
+        flash(f"Already {entry.get('status','?')}.", "error")
+        return redirect(url_for("payments"))
+
+    tid  = entry["telegram_id"]
+    name = entry.get("name","Sir")
+    amt  = entry.get("amount","?")
+    site = entry.get("site","?")
 
     if action == "accept":
-        db.execute("UPDATE users SET status='accepted' WHERE id=?", (req_id,))
-        db.commit()
-        db.backup_now()
-        send_tg(row["telegram_id"],
+        # Update cache
+        update_payment_cache(req_id, status="accepted")
+        # Update DB (if DB-backed)
+        if not is_cache_only:
+            try:
+                db.execute("UPDATE users SET status='accepted' WHERE id=?", (int(req_id),))
+                db.commit(); db.backup_now()
+            except Exception: pass
+        # Notify customer
+        send_tg(tid,
             f"✅ *Payment Accepted!*\n\n"
-            f"Dear *{row['name']}* Sir,\n"
-            f"Your deposit of ₹{row['amount']} for *{row['site']}* has been verified!\n\n"
-            f"⏳ Your ID will be sent shortly. Please wait a moment...")
-        flash(f"✅ Request #{req_id} accepted! Now enter ID below to send.", "success")
+            f"Dear *{name}* Sir,\n"
+            f"Aapka ₹{amt} ka deposit *{site}* ke liye verify ho gaya!\n\n"
+            f"⏳ Aapki ID abhi bhej di jayegi. Thoda wait karein 🙏")
+        flash(f"✅ Accepted! Ab ID daalo aur 📤 Send karo.", "success")
+
     elif action == "decline":
-        db.execute("UPDATE users SET status='declined' WHERE id=?", (req_id,))
-        db.commit()
-        db.backup_now()
-        send_tg(row["telegram_id"],
-            f"❌ *Payment Not Received Sir*\n\n"
-            f"Dear *{row['name']}* Sir,\n\n"
-            f"For more information contact here :-\n"
+        update_payment_cache(req_id, status="declined")
+        if not is_cache_only:
+            try:
+                db.execute("UPDATE users SET status='declined' WHERE id=?", (int(req_id),))
+                db.commit(); db.backup_now()
+            except Exception: pass
+        send_tg(tid,
+            f"❌ *Payment Nahi Mili Sir*\n\n"
+            f"Dear *{name}* Sir,\n\n"
+            f"Zyada jaankari ke liye yahan contact karein:\n"
             f"👉 https://wa.me/919520668248\n\n"
             f"Dobara try karne ke liye /start karein 🙏")
-        flash(f"❌ Request #{req_id} declined. User notified.", "success")
+        flash(f"❌ Declined. Customer notify kar diya.", "success")
 
     return redirect(url_for("payments"))
 
@@ -931,12 +1031,25 @@ def payment_manual_add():
     except ValueError:
         flash("⚠️ Sahi Telegram ID daalo (sirf numbers).", "error")
         return redirect(url_for("payments"))
-    db.execute(
-        "INSERT INTO users (telegram_id,name,phone,site,id_type,amount,utr,status) VALUES (?,?,?,?,?,?,?,?)",
-        (tid, name, phone, site, id_type, amount, utr, "pending")
-    )
-    db.commit()
-    db.backup_now()
+    try:
+        db.execute(
+            "INSERT INTO users (telegram_id,name,phone,site,id_type,amount,utr,status) VALUES (?,?,?,?,?,?,?,?)",
+            (tid, name, phone, site, id_type, amount, utr, "pending")
+        )
+        db.commit()
+        db.backup_now()
+        # Cache with DB id
+        try:
+            if db.is_pg:
+                row = db.execute("SELECT id FROM users WHERE telegram_id=%s AND utr=%s ORDER BY id DESC LIMIT 1",(tid,utr)).fetchone()
+            else:
+                row = db.execute("SELECT last_insert_rowid() AS id").fetchone()
+            cid = str(row["id"]) if row else f"c_{tid}_{int(time.time()*1000)}"
+        except Exception:
+            cid = f"c_{tid}_{int(time.time()*1000)}"
+    except Exception:
+        cid = f"c_{tid}_{int(time.time()*1000)}"
+    cache_payment(cid, tid, name, phone, site, id_type, amount, utr)
     flash(f"✅ Payment manually add hua — {name} | ₹{amount} | UTR: {utr}", "success")
     return redirect(url_for("payments"))
 
@@ -944,26 +1057,53 @@ def payment_manual_add():
 @app.route("/admin/payment/send_id", methods=["POST"])
 @login_required
 def send_id():
-    req_id  = int(request.form.get("req_id", 0))
+    req_id  = request.form.get("req_id", "").strip()
     id_pass = request.form.get("id_pass", "").strip()
     if not id_pass:
-        flash("Enter an ID/Password first.", "error"); return redirect(url_for("payments"))
-    row = db.execute("SELECT * FROM users WHERE id=?", (req_id,)).fetchone()
-    if not row:
-        flash("Request not found.", "error"); return redirect(url_for("payments"))
-    db.execute("UPDATE users SET id_pass=? WHERE id=?", (id_pass, req_id))
-    db.commit()
-    db.backup_now()
+        flash("⚠️ Pehle ID:Password daalo.", "error")
+        return redirect(url_for("payments"))
+
+    is_cache_only = req_id.startswith("c_")
+
+    # Get entry from cache first
+    entry = None
+    with _PAY_LOCK:
+        entry = dict(PAYMENT_CACHE.get(req_id, {}))
+
+    if not entry and not is_cache_only:
+        try:
+            row = db.execute("SELECT * FROM users WHERE id=?", (int(req_id),)).fetchone()
+            if row:
+                entry = {"telegram_id": row["telegram_id"], "name": row["name"],
+                         "site": row["site"], "cache_id": req_id}
+        except Exception: pass
+
+    if not entry:
+        flash("⚠️ Payment request nahi mila.", "error")
+        return redirect(url_for("payments"))
+
+    tid  = entry["telegram_id"]
+    name = entry.get("name", "Sir")
+    site = entry.get("site", "?")
+
+    # Update cache + DB
+    update_payment_cache(req_id, id_pass=id_pass, status="accepted")
+    if not is_cache_only:
+        try:
+            db.execute("UPDATE users SET id_pass=?,status='accepted' WHERE id=?",
+                       (id_pass, int(req_id)))
+            db.commit(); db.backup_now()
+        except Exception: pass
 
     # Message 1 — ID details
-    send_tg(row["telegram_id"],
+    send_tg(tid,
         f"🎉 *Aapki ID Ready Hai Sir!*\n\n"
-        f"🌐 Site: *{row['site']}*\n"
+        f"🌐 Site: *{site}*\n"
         f"🔑 *ID / Password:* `{id_pass}`\n\n"
         f"Thank you for choosing Laser Panel 🙏")
 
-    # Message 2 — Deposit & Withdrawal info
-    send_tg(row["telegram_id"],
+    # Message 2 — Deposit info
+    send_tg(tid,
         "🔴✨ LASER247 OFFICIAL SERVICE ✨🔴\n\n"
         "⚡ Fast • Secure • Trusted | तेज • सुरक्षित • भरोसेमंद ⚡\n\n"
         "💰 💎 LASER247 Deposit Zone 💎\n\n"
@@ -978,7 +1118,7 @@ def send_id():
         "🔐 Safe & Secure Transactions | सुरक्षित लेन-देन की गारंटी")
 
     # Message 3 — Customer Support
-    send_tg(row["telegram_id"],
+    send_tg(tid,
         "🔴✨ LASER247 CUSTOMER SUPPORT ✨🔴\n\n"
         "📞 🎧 24×7 Customer Care Service 🎧\n"
         "For any help or support, contact below:\n"
@@ -987,7 +1127,7 @@ def send_id():
         "⚡ Quick Response | तेज जवाब | हमेशा उपलब्ध\n\n"
         "🛡️ Trusted Support | भरोसेमंद सेवा")
 
-    flash(f"✅ ID sent to {row['name']} successfully!", "success")
+    flash(f"✅ ID bhej diya — {name} ko!", "success")
     return redirect(url_for("payments"))
 
 
