@@ -577,40 +577,66 @@ def logout():
 @app.route("/admin/dashboard")
 @admin_only
 def dashboard():
-    today_str = date.today().isoformat()
+    today_str = date.today().isoformat()  # "2026-04-25"
 
-    # Single query for all stats
-    stats = db.execute("""
-        SELECT
-          COUNT(*) AS total_users,
-          COALESCE(SUM(CASE WHEN status='accepted' THEN CAST(amount AS REAL) ELSE 0 END),0) AS total_amount,
-          COALESCE(SUM(CASE WHEN status='accepted' AND DATE(created_at)=? THEN CAST(amount AS REAL) ELSE 0 END),0) AS today_dep,
-          COUNT(CASE WHEN DATE(created_at)=? THEN 1 END) AS today_reg,
-          COUNT(CASE WHEN status='pending' THEN 1 END) AS pending_cnt
-        FROM users
-    """, (today_str, today_str)).fetchone()
+    # ── Stats from PAYMENT_CACHE (always accurate — warmed from DB on startup) ─
+    with _PAY_LOCK:
+        cache_vals = list(PAYMENT_CACHE.values())
 
-    total_users  = stats["total_users"]  if stats else 0
-    total_amount = stats["total_amount"] if stats else 0
-    today_dep    = stats["today_dep"]    if stats else 0
-    today_reg    = stats["today_reg"]    if stats else 0
-    pending_cnt  = stats["pending_cnt"]  if stats else 0
+    total_users  = len(cache_vals)
+    total_amount = sum(
+        float(p.get("amount") or 0)
+        for p in cache_vals if p.get("status") == "accepted"
+    )
+    # ts format in cache = "DD/MM HH:MM", e.g. "25/04 17:30"
+    today_prefix = today_str[8:10] + "/" + today_str[5:7]   # e.g. "25/04"
+    today_dep = sum(
+        float(p.get("amount") or 0)
+        for p in cache_vals
+        if p.get("status") == "accepted" and str(p.get("ts","")).startswith(today_prefix)
+    )
+    today_reg_cache = sum(1 for p in cache_vals if str(p.get("ts","")).startswith(today_prefix))
+    pending_cnt = sum(1 for p in cache_vals if p.get("status") == "pending")
 
-    rows = db.execute(
-        "SELECT id,name,site,id_type,amount,status,created_at FROM users ORDER BY id DESC LIMIT 10"
-    ).fetchall()
+    # Today's registrations — try DB first, fallback to cache count
+    try:
+        t_reg = db.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE DATE(created_at)=?", (today_str,)
+        ).fetchone()
+        today_reg = max(t_reg["c"] if t_reg else 0, today_reg_cache)
+    except Exception:
+        today_reg = today_reg_cache
+
+    # If DB has more records than cache (shouldn't happen normally), use DB count
+    try:
+        db_total = db.execute("SELECT COUNT(*) AS c FROM users").fetchone()
+        if db_total and db_total["c"] > total_users:
+            total_users = db_total["c"]
+        db_amt = db.execute(
+            "SELECT COALESCE(SUM(CASE WHEN status='accepted' THEN CAST(amount AS REAL) ELSE 0 END),0) AS s FROM users"
+        ).fetchone()
+        if db_amt and float(db_amt["s"] or 0) > total_amount:
+            total_amount = float(db_amt["s"])
+        db_pend = db.execute("SELECT COUNT(*) AS c FROM users WHERE status='pending'").fetchone()
+        if db_pend and db_pend["c"] > pending_cnt:
+            pending_cnt = db_pend["c"]
+    except Exception:
+        pass
+
+    # ── Recent Activity — last 10 from cache (sorted newest first) ─────────────
+    recent = sorted(cache_vals, key=lambda x: x.get("cache_id",""), reverse=True)[:10]
 
     rows_html = ""
-    for r in rows:
-        badge = {"pending":"badge-pending","accepted":"badge-accepted","declined":"badge-declined"}.get(r["status"],"badge-pending")
+    for r in recent:
+        badge = {"pending":"badge-pending","accepted":"badge-accepted","declined":"badge-declined"}.get(r.get("status","pending"),"badge-pending")
         rows_html += f"""<tr>
-          <td style="color:var(--muted)">#{r["id"]}</td>
-          <td style="font-weight:600">{r["name"] or "—"}</td>
-          <td>{r["site"] or "—"}</td>
-          <td><span class="badge badge-new">{(r["id_type"] or "new").upper()}</span></td>
-          <td style="color:var(--green);font-weight:700">₹{r["amount"] or 0}</td>
-          <td><span class="badge {badge}">{r["status"].upper()}</span></td>
-          <td style="color:var(--muted);font-size:.77rem">{fmt_dt(r["created_at"])}</td>
+          <td style="color:var(--muted)">#{r.get("cache_id","—")}</td>
+          <td style="font-weight:600">{r.get("name","—")}</td>
+          <td>{r.get("site","—")}</td>
+          <td><span class="badge badge-new">{(r.get("id_type","new")).upper()}</span></td>
+          <td style="color:var(--green);font-weight:700">₹{r.get("amount",0)}</td>
+          <td><span class="badge {badge}">{r.get("status","pending").upper()}</span></td>
+          <td style="color:var(--muted);font-size:.77rem">{r.get("ts","—")}</td>
         </tr>"""
 
     content = f"""
