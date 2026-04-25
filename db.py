@@ -302,6 +302,56 @@ db = Database()
 # ── In-memory caches (shared between bot + admin — no DB needed) ─────────────
 import datetime as _dt
 
+# ── Conversation state persistence ───────────────────────────────────────────
+import json as _json
+
+def save_user_state(telegram_id: int, state: dict):
+    """Save user's current conversation step + data to DB (survives restarts)."""
+    try:
+        payload = _json.dumps(state, ensure_ascii=False)
+        if db.is_pg:
+            db.execute(
+                "INSERT INTO user_state (telegram_id, state_json, updated_at) "
+                "VALUES (%s, %s, NOW()) "
+                "ON CONFLICT (telegram_id) DO UPDATE SET state_json=EXCLUDED.state_json, updated_at=NOW()",
+                (telegram_id, payload)
+            )
+        else:
+            db.execute(
+                "INSERT OR REPLACE INTO user_state (telegram_id, state_json, updated_at) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (telegram_id, payload)
+            )
+        db.commit()
+    except Exception as e:
+        print(f"⚠️  save_user_state failed tid={telegram_id}: {e}")
+
+
+def load_user_state(telegram_id: int) -> dict:
+    """Load saved conversation state for a user. Returns {} if not found."""
+    try:
+        ph  = "%s" if db.is_pg else "?"
+        row = db.execute(
+            f"SELECT state_json FROM user_state WHERE telegram_id={ph}",
+            (telegram_id,)
+        ).fetchone()
+        if row:
+            return _json.loads(row["state_json"] or "{}")
+    except Exception as e:
+        print(f"⚠️  load_user_state failed tid={telegram_id}: {e}")
+    return {}
+
+
+def clear_user_state(telegram_id: int):
+    """Clear saved state when flow is complete (after UTR submit or /start fresh)."""
+    try:
+        ph = "%s" if db.is_pg else "?"
+        db.execute(f"DELETE FROM user_state WHERE telegram_id={ph}", (telegram_id,))
+        db.commit()
+    except Exception as e:
+        print(f"⚠️  clear_user_state failed tid={telegram_id}: {e}")
+
+
 # ── Chat cache ────────────────────────────────────────────────────────────────
 # {str(telegram_id): {"user_name": str, "messages": [{"sender","message","ts"}]}}
 CHAT_CACHE: dict = {}
@@ -388,6 +438,12 @@ def _init_schema():
         telegram_id INTEGER, user_name TEXT,
         sender TEXT, message TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+
+    # Conversation state — survives Railway restarts
+    db.execute(f"""CREATE TABLE IF NOT EXISTS user_state (
+        telegram_id INTEGER PRIMARY KEY,
+        state_json  TEXT NOT NULL DEFAULT '{{}}',
+        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
 
     for col in ["id_pass TEXT", "id_type TEXT", "utr TEXT",
                 "phone TEXT", "site TEXT", "screenshot_file_id TEXT"]:
