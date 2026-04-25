@@ -286,23 +286,27 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"]   = "screenshot"
         upi     = get_upi()
         upi_url = f"upi://pay?pa={upi}&pn=LaserPanel&am={text}&cu=INR"
-        qr_path = os.path.join(BASE_DIR, f"qr_{tid}.png")
-        qrcode.make(upi_url).save(qr_path)
-        with open(qr_path, "rb") as f:
-            await update.message.reply_photo(
-                f,
-                caption=(
-                    f"💳 *Payment Details Sir*\n\n"
-                    f"📲 UPI ID: `{upi}`\n"
-                    f"💰 Amount: ₹*{text}*\n\n"
-                    f"Sir, QR scan karke ya UPI ID se payment karein.\n\n"
-                    f"✅ Payment hone ke baad *screenshot bhejein Sir.*"
-                ),
-                parse_mode="Markdown",
-            )
-        log_chat(tid, uname, "bot", f"💳 QR code bheja — UPI: {upi} | Amount: ₹{text} | Screenshot bhejein")
-        try: os.remove(qr_path)
-        except: pass
+        caption = (
+            f"💳 *Payment Details Sir*\n\n"
+            f"📲 UPI ID: `{upi}`\n"
+            f"💰 Amount: ₹*{text}*\n\n"
+            f"Sir, QR scan karke ya UPI ID se payment karein.\n\n"
+            f"✅ Payment hone ke baad *screenshot bhejein Sir.*"
+        )
+        qr_sent = False
+        try:
+            qr_path = os.path.join(BASE_DIR, f"qr_{tid}.png")
+            qrcode.make(upi_url).save(qr_path)
+            with open(qr_path, "rb") as f:
+                await update.message.reply_photo(f, caption=caption, parse_mode="Markdown")
+            try: os.remove(qr_path)
+            except: pass
+            qr_sent = True
+        except Exception as e:
+            print(f"QR error: {e}")
+        if not qr_sent:
+            await update.message.reply_text(caption, parse_mode="Markdown")
+        log_chat(tid, uname, "bot", f"💳 Payment details bheja — UPI: {upi} | Amount: ₹{text} | Screenshot bhejein")
 
     # ── Step 4: UTR (validate 12 digits) ──
     elif step == "utr":
