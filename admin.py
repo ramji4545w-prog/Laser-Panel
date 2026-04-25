@@ -38,6 +38,9 @@ db.execute("INSERT OR IGNORE INTO settings (id,upi) VALUES (1,?)", (DEFAULT_UPI,
 for col in ["id_pass TEXT","id_type TEXT","utr TEXT","phone TEXT","site TEXT"]:
     try: db.execute(f"ALTER TABLE users ADD COLUMN {col}")
     except: pass
+db.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
+db.execute("CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at)")
+db.execute("CREATE INDEX IF NOT EXISTS idx_users_tgid ON users(telegram_id)")
 db.commit()
 
 
@@ -81,8 +84,6 @@ def admin_only(f):
 # ══════════════════════════════════════════════════════
 
 BASE_CSS = """
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 :root {
@@ -100,7 +101,7 @@ BASE_CSS = """
   --yellow:   #f59e0b;
 }
 body { background:var(--bg); color:var(--text);
-       font-family:'Inter',system-ui,sans-serif; min-height:100vh; }
+       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; min-height:100vh; }
 ::-webkit-scrollbar{width:5px}
 ::-webkit-scrollbar-track{background:var(--bg)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
@@ -620,10 +621,20 @@ def today():
 @login_required
 def payments():
     status_filter = request.args.get("status", "all")
+    page = max(1, int(request.args.get("page", 1)))
+    per_page = 30
+    offset = (page - 1) * per_page
+
     if status_filter != "all":
-        rows = db.execute("SELECT * FROM users WHERE status=? ORDER BY id DESC", (status_filter,)).fetchall()
+        total_rows = db.execute("SELECT COUNT(*) FROM users WHERE status=?", (status_filter,)).fetchone()[0]
+        rows = db.execute("SELECT * FROM users WHERE status=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                          (status_filter, per_page, offset)).fetchall()
     else:
-        rows = db.execute("SELECT * FROM users ORDER BY id DESC").fetchall()
+        total_rows = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        rows = db.execute("SELECT * FROM users ORDER BY id DESC LIMIT ? OFFSET ?",
+                          (per_page, offset)).fetchall()
+
+    total_pages = max(1, (total_rows + per_page - 1) // per_page)
 
     flashes = get_flashes()
 
@@ -683,7 +694,13 @@ def payments():
   <tbody>
     {rows_html if rows_html else '<tr><td colspan="9" class="empty">No payments found</td></tr>'}
   </tbody>
-</table></div>"""
+</table></div>
+<div style="display:flex;gap:8px;justify-content:center;margin-top:20px;flex-wrap:wrap;">
+{"".join([f'<a href="?status={status_filter}&page={p}" class="btn ' + ("btn-primary" if p==page else "btn-ghost") + f' btn-sm">{p}</a>' for p in range(1, total_pages+1)])}
+</div>
+<p style="text-align:center;color:var(--muted);margin-top:8px;font-size:13px;">
+  Showing {len(rows)} of {total_rows} records &nbsp;|&nbsp; Page {page} / {total_pages}
+</p>"""
     return page("Payments", content, "payments")
 
 
