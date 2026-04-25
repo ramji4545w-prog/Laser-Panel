@@ -2,6 +2,7 @@ import os
 import re
 import io
 import time
+import traceback
 import qrcode
 
 try:
@@ -105,11 +106,14 @@ def db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id):
             )
             db.commit()
             db.backup_now()
+            print(f"✅ DB insert OK — tid={tid} utr={utr} site={site} amount={amount}")
             return True
         except Exception as e:
-            print(f"DB insert attempt {attempt+1} failed: {e}")
+            print(f"❌ DB insert attempt {attempt+1}/3 FAILED: {type(e).__name__}: {e}")
+            print(traceback.format_exc())
             if attempt < 2:
                 time.sleep(1)
+    print(f"❌ DB insert GAVE UP after 3 attempts — tid={tid} utr={utr}")
     return False
 
 
