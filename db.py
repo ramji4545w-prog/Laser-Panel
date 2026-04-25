@@ -194,11 +194,6 @@ class Database:
             data_dir       = "/data" if os.path.isdir("/data") else BASE
             self._sq_path  = os.path.join(data_dir, "database.db")
 
-            # Restore from GitHub before connecting (so we get latest data)
-            if _GITHUB_TOKEN:
-                self._gist = _GistBackup(_GITHUB_TOKEN, self._sq_path)
-                self._gist.restore()
-
             self._sq = sqlite3.connect(
                 self._sq_path, check_same_thread=False, timeout=10)
             self._sq.row_factory = sqlite3.Row
@@ -206,10 +201,6 @@ class Database:
                       "PRAGMA cache_size=-20000", "PRAGMA temp_store=MEMORY"]:
                 self._sq.execute(p)
             print(f"✅ Database: SQLite ({self._sq_path})")
-
-            # Start background auto-backup every 3 minutes
-            if self._gist:
-                self._gist.start_auto_backup(interval=180)
 
     # ── SQL adaptation ───────────────────────────────────────────────────────
 
