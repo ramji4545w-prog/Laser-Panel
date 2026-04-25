@@ -377,19 +377,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get("step")
+    tid  = update.effective_chat.id
+    uname = context.user_data.get("name") or (update.effective_user.full_name or "Unknown")
 
     if step == "screenshot":
         file_id = update.message.photo[-1].file_id
 
         # ── OCR: screenshot check karo ──
-        checking_msg = await update.message.reply_text(
-            "🔍 *Screenshot verify ho rahi hai Sir...*",
-            parse_mode="Markdown",
-        )
+        checking_msg = None
+        try:
+            checking_msg = await update.message.reply_text(
+                "🔍 *Screenshot verify ho rahi hai Sir...*",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
 
-        is_valid = await verify_screenshot_ocr(file_id, context.bot)
+        try:
+            is_valid = await verify_screenshot_ocr(file_id, context.bot)
+        except Exception:
+            is_valid = True  # OCR fail hone pe block mat karo
 
-        await checking_msg.delete()
+        try:
+            if checking_msg:
+                await checking_msg.delete()
+        except Exception:
+            pass
 
         if not is_valid:
             await update.message.reply_text(
@@ -412,6 +425,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "_(Payment ke baad milne wala 12 digit ka number)_",
             parse_mode="Markdown",
         )
+        log_chat(tid, uname, "bot", "Screenshot verify ho gayi — UTR maanga")
 
     elif step == "utr":
         await update.message.reply_text(
