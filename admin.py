@@ -743,6 +743,7 @@ def payment_action():
     if action == "accept":
         db.execute("UPDATE users SET status='accepted' WHERE id=?", (req_id,))
         db.commit()
+        db.backup_now()
         send_tg(row["telegram_id"],
             f"✅ *Payment Accepted!*\n\n"
             f"Dear *{row['name']}* Sir,\n"
@@ -752,6 +753,7 @@ def payment_action():
     elif action == "decline":
         db.execute("UPDATE users SET status='declined' WHERE id=?", (req_id,))
         db.commit()
+        db.backup_now()
         send_tg(row["telegram_id"],
             f"❌ *Payment Declined*\n\n"
             f"Dear *{row['name']}* Sir,\n"
@@ -775,6 +777,7 @@ def send_id():
         flash("Request not found.", "error"); return redirect(url_for("payments"))
     db.execute("UPDATE users SET id_pass=? WHERE id=?", (id_pass, req_id))
     db.commit()
+    db.backup_now()
 
     # Message 1 — ID details
     send_tg(row["telegram_id"],
