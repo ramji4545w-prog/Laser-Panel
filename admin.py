@@ -61,6 +61,45 @@ def get_upi():
     return r["upi"] if r else DEFAULT_UPI
 
 
+def save_upi_permanent(new_upi: str) -> bool:
+    """DB update + Railway env var update (survives redeploy)"""
+    # 1. Update local DB immediately
+    db.execute("UPDATE settings SET upi=? WHERE id=1", (new_upi,))
+    db.commit()
+
+    # 2. Also update Railway env var so it persists after redeploy
+    token   = os.environ.get("RAILWAY_TOKEN", "")
+    proj_id = os.environ.get("RAILWAY_PROJECT_ID", "")
+    env_id  = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
+    svc_id  = os.environ.get("RAILWAY_SERVICE_ID", "")
+
+    if not all([token, proj_id, env_id, svc_id]):
+        return False  # Railway API not configured — DB only
+
+    query = """
+    mutation variableUpsert($input: VariableUpsertInput!) {
+      variableUpsert(input: $input)
+    }
+    """
+    try:
+        resp = requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"query": query, "variables": {"input": {
+                "projectId": proj_id,
+                "environmentId": env_id,
+                "serviceId": svc_id,
+                "name": "UPI_ID",
+                "value": new_upi
+            }}},
+            timeout=10
+        )
+        data = resp.json()
+        return resp.status_code == 200 and "errors" not in data
+    except:
+        return False
+
+
 def send_tg(chat_id, text):
     try:
         requests.post(
@@ -1154,19 +1193,34 @@ def settings():
     flashes = get_flashes()
     current_upi = get_upi()
 
+    railway_ready = all([
+        os.environ.get("RAILWAY_TOKEN"),
+        os.environ.get("RAILWAY_PROJECT_ID"),
+        os.environ.get("RAILWAY_ENVIRONMENT_ID"),
+        os.environ.get("RAILWAY_SERVICE_ID"),
+    ])
+
     if request.method == "POST":
         new_upi = request.form.get("upi","").strip()
         if new_upi:
-            db.execute("UPDATE settings SET upi=? WHERE id=1", (new_upi,))
-            db.commit()
-            flash(f"✅ UPI ID updated to: {new_upi}", "success")
+            railway_ok = save_upi_permanent(new_upi)
+            if railway_ok:
+                flash(f"✅ UPI ID permanently saved: {new_upi} (Railway env var updated)", "success")
+            else:
+                flash(f"✅ UPI ID updated: {new_upi} (active until next redeploy — add RAILWAY_TOKEN to make permanent)", "success")
             return redirect(url_for("settings"))
         flash("UPI ID cannot be empty.", "error")
+
+    railway_badge = (
+        '<span style="color:#22c55e;font-size:.8rem">✅ Permanent save enabled</span>'
+        if railway_ready else
+        '<span style="color:#f59e0b;font-size:.8rem">⚠️ Add RAILWAY_TOKEN to make UPI permanent across redeploys</span>'
+    )
 
     content = f"""
 <div class="page-title">Settings</div>
 {flashes}
-<div class="card" style="max-width:480px">
+<div class="card" style="max-width:500px">
   <div class="card-label" style="margin-bottom:18px">💳 UPI Payment Settings</div>
   <div class="form-group">
     <label class="form-label">CURRENT UPI ID</label>
@@ -1180,6 +1234,7 @@ def settings():
       <label class="form-label">UPDATE UPI ID</label>
       <input class="form-input" name="upi" placeholder="yourname@upi" value="{current_upi}">
     </div>
+    <div style="margin-bottom:14px">{railway_badge}</div>
     <button type="submit" class="btn btn-primary">💾 Save UPI ID</button>
   </form>
 </div>"""
