@@ -299,17 +299,18 @@ class Database:
 db = Database()
 
 
-# ── In-memory chat cache (shared between bot + admin, survives without DB) ──
-# Structure: {telegram_id: {"user_name": str, "messages": [{"sender","message","ts"}]}}
+# ── In-memory caches (shared between bot + admin — no DB needed) ─────────────
 import datetime as _dt
 
+# ── Chat cache ────────────────────────────────────────────────────────────────
+# {str(telegram_id): {"user_name": str, "messages": [{"sender","message","ts"}]}}
 CHAT_CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
-MAX_MSG_PER_USER = 200   # keep last 200 messages per user
+MAX_MSG_PER_USER = 200
 
 
 def cache_log(telegram_id: int, user_name: str, sender: str, message: str):
-    """Save a message to in-memory cache — always works, no DB needed."""
+    """Save a message to in-memory chat cache — always works, no DB needed."""
     tid = str(telegram_id)
     ts  = _dt.datetime.now().strftime("%H:%M")
     with _CACHE_LOCK:
@@ -320,9 +321,46 @@ def cache_log(telegram_id: int, user_name: str, sender: str, message: str):
         CHAT_CACHE[tid]["messages"].append(
             {"sender": sender, "message": message, "ts": ts}
         )
-        # Keep only last MAX_MSG_PER_USER messages
         if len(CHAT_CACHE[tid]["messages"]) > MAX_MSG_PER_USER:
             CHAT_CACHE[tid]["messages"] = CHAT_CACHE[tid]["messages"][-MAX_MSG_PER_USER:]
+
+
+# ── Payment cache ─────────────────────────────────────────────────────────────
+# {cache_id_str: {cache_id, telegram_id, name, phone, site, id_type,
+#                 amount, utr, status, id_pass, ts}}
+# cache_id = str(db_row_id) when DB worked, else "c_<tid>_<epoch_ms>"
+PAYMENT_CACHE: dict = {}
+_PAY_LOCK = threading.Lock()
+
+
+def cache_payment(cache_id, telegram_id, name, phone, site, id_type,
+                  amount, utr, status="pending", id_pass="", screenshot_id=""):
+    """Add or overwrite a payment entry in the in-memory cache."""
+    ts = _dt.datetime.now().strftime("%d/%m %H:%M")
+    entry = {
+        "cache_id":     str(cache_id),
+        "telegram_id":  int(telegram_id),
+        "name":         name or "Unknown",
+        "phone":        phone or "",
+        "site":         site or "",
+        "id_type":      id_type or "new",
+        "amount":       str(amount or ""),
+        "utr":          utr or "",
+        "status":       status,
+        "id_pass":      id_pass or "",
+        "screenshot_id": screenshot_id or "",
+        "ts":           ts,
+    }
+    with _PAY_LOCK:
+        PAYMENT_CACHE[str(cache_id)] = entry
+
+
+def update_payment_cache(cache_id, **kwargs):
+    """Update specific fields of a cached payment entry."""
+    with _PAY_LOCK:
+        cid = str(cache_id)
+        if cid in PAYMENT_CACHE:
+            PAYMENT_CACHE[cid].update(kwargs)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
