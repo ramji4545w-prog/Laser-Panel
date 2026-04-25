@@ -771,10 +771,10 @@ def payment_action():
         db.commit()
         db.backup_now()
         send_tg(row["telegram_id"],
-            f"❌ *Payment Declined*\n\n"
-            f"Dear *{row['name']}* Sir,\n"
-            f"Aapka ₹{row['amount']} ka payment *{row['site']}* ke liye decline ho gaya.\n\n"
-            f"For more information contact here 👉 https://wa.me/919520668248\n\n"
+            f"❌ *Payment Not Received Sir*\n\n"
+            f"Dear *{row['name']}* Sir,\n\n"
+            f"For more information contact here :-\n"
+            f"👉 https://wa.me/919520668248\n\n"
             f"Dobara try karne ke liye /start karein 🙏")
         flash(f"❌ Request #{req_id} declined. User notified.", "success")
 
@@ -809,7 +809,7 @@ def send_id():
         "💰 💎 LASER247 Deposit Zone 💎\n\n"
         "To make a deposit, click below:\n"
         "जमा करने के लिए नीचे क्लिक करें:\n"
-        "👉 https://api.waurl.in/r/0nefhia4\n\n"
+        "👉 +91 63675 88380\n\n"
         "🚀 Instant Response | तुरंत जवाब | 24×7 Active\n\n"
         "💸 ⚡ LASER247 Withdrawal Desk ⚡\n\n"
         "To request a withdrawal, click below:\n"
