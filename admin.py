@@ -1162,24 +1162,23 @@ def settings():
     flashes = get_flashes()
     current_upi = get_upi()
 
-    # Only RAILWAY_TOKEN needed — rest are auto-set by Railway
-    railway_ready = bool(os.environ.get("RAILWAY_TOKEN"))
+    github_ready = bool(os.environ.get("GITHUB_TOKEN"))
 
     if request.method == "POST":
         new_upi = request.form.get("upi","").strip()
         if new_upi:
-            railway_ok = save_upi_permanent(new_upi)
-            if railway_ok:
-                flash(f"✅ UPI ID permanently saved: {new_upi} (Railway env var updated)", "success")
-            else:
-                flash(f"✅ UPI ID updated: {new_upi} (active until next redeploy — add RAILWAY_TOKEN to make permanent)", "success")
+            db.execute("UPDATE settings SET upi=? WHERE id=1", (new_upi,))
+            db.commit()
+            db.backup_now()
+            save_upi_permanent(new_upi)
+            flash(f"✅ UPI ID saved: {new_upi} — backup ho gaya!", "success")
             return redirect(url_for("settings"))
         flash("UPI ID cannot be empty.", "error")
 
     railway_badge = (
-        '<span style="color:#22c55e;font-size:.8rem">✅ Permanent save enabled</span>'
-        if railway_ready else
-        '<span style="color:#f59e0b;font-size:.8rem">⚠️ Add RAILWAY_TOKEN to make UPI permanent across redeploys</span>'
+        '<span style="color:#22c55e;font-size:.8rem">✅ Permanent save enabled (GitHub backup active)</span>'
+        if github_ready else
+        '<span style="color:#f59e0b;font-size:.8rem">⚠️ GITHUB_TOKEN set karo Railway mein — data permanent hoga</span>'
     )
 
     content = f"""
