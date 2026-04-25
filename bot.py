@@ -277,6 +277,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Step 3: Amount → QR ──
     elif step == "amount":
+        if not text.isdigit() or int(text) < 100:
+            bot_msg = "⚠️ Sir, minimum ₹100 amount hona chahiye. Sahi amount type karein."
+            await update.message.reply_text(bot_msg, parse_mode="Markdown")
+            log_chat(tid, uname, "bot", bot_msg)
+            return
         context.user_data["amount"] = text
         context.user_data["step"]   = "screenshot"
         upi     = get_upi()
@@ -338,6 +343,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         log_chat(tid, name, "bot", bot_msg)
+
+    elif step == "screenshot":
+        bot_msg = "📸 Sir, please payment ka *screenshot bhejein* (photo) — text nahi."
+        await update.message.reply_text(bot_msg, parse_mode="Markdown")
+        log_chat(tid, uname, "bot", bot_msg)
 
     else:
         bot_msg = "🙏 Sir, /start type karein aur shuru karein."
