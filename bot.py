@@ -351,11 +351,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data.clear()
 
-        bot_msg = f"✅ Shukriya {name} Sir! — 2-5 min mein ID mil jayegi"
+        bot_msg = f"✅ UTR receive hua — payment check ho raha hai, 5 min wait karein"
         await update.message.reply_text(
             f"✅ *Shukriya {name} Sir!*\n\n"
-            f"⏳ Sir, please *2-5 minute wait karein.*\n"
-            f"Aapki ID verify hote hi bhej di jayegi. 🙏",
+            f"🔍 Aapka payment check ho raha hai.\n"
+            f"⏳ Please *5 minute wait karein Sir.*\n\n"
+            f"ID verify hote hi turant bhej di jayegi. 🙏",
             parse_mode="Markdown",
         )
         log_chat(tid, name, "bot", bot_msg)
