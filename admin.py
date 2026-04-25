@@ -434,6 +434,69 @@ def ping():
     return "ok", 200
 
 
+@app.route("/admin/db_status")
+@login_required
+def db_status():
+    """Railway debug — shows DB type, record counts, env vars."""
+    import os
+    db_type = "PostgreSQL ✅" if db.is_pg else "SQLite ⚠️"
+    try:
+        pay_count  = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        chat_count = db.execute("SELECT COUNT(*) FROM chat_logs").fetchone()[0]
+        last_pay   = db.execute("SELECT name,utr,status,created_at FROM users ORDER BY id DESC LIMIT 5").fetchall()
+    except Exception as e:
+        pay_count = chat_count = 0
+        last_pay = []
+    
+    has_db_url  = "✅ SET" if os.environ.get("DATABASE_URL") else "❌ NOT SET"
+    has_tg_tok  = "✅ SET" if os.environ.get("TELEGRAM_BOT_TOKEN") else "❌ NOT SET"
+    has_gh_tok  = "✅ SET" if os.environ.get("GITHUB_TOKEN") else "❌ NOT SET"
+    
+    rows = "".join(f"<tr><td>{r['name']}</td><td>{r['utr']}</td><td>{r['status']}</td><td>{fmt_dt(r['created_at'])}</td></tr>"
+                   for r in last_pay)
+    
+    content = f"""
+<div class="topbar"><div class="page-title">DB <span>Status</span></div></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px">
+  <div class="card" style="padding:16px">
+    <div style="color:var(--muted);font-size:11px">DATABASE</div>
+    <div style="font-size:16px;font-weight:700;margin-top:6px">{db_type}</div>
+  </div>
+  <div class="card" style="padding:16px">
+    <div style="color:var(--muted);font-size:11px">DATABASE_URL</div>
+    <div style="font-size:15px;font-weight:700;margin-top:6px">{has_db_url}</div>
+  </div>
+  <div class="card" style="padding:16px">
+    <div style="color:var(--muted);font-size:11px">TELEGRAM_BOT_TOKEN</div>
+    <div style="font-size:15px;font-weight:700;margin-top:6px">{has_tg_tok}</div>
+  </div>
+  <div class="card" style="padding:16px">
+    <div style="color:var(--muted);font-size:11px">GITHUB_TOKEN</div>
+    <div style="font-size:15px;font-weight:700;margin-top:6px">{has_gh_tok}</div>
+  </div>
+  <div class="card" style="padding:16px">
+    <div style="color:var(--muted);font-size:11px">PAYMENTS in DB</div>
+    <div style="font-size:28px;font-weight:700;margin-top:6px;color:var(--green)">{pay_count}</div>
+  </div>
+  <div class="card" style="padding:16px">
+    <div style="color:var(--muted);font-size:11px">CHATS in DB</div>
+    <div style="font-size:28px;font-weight:700;margin-top:6px;color:var(--blue2)">{chat_count}</div>
+  </div>
+</div>
+<div class="card" style="padding:16px">
+  <div style="font-weight:600;margin-bottom:12px">Last 5 Payments in DB</div>
+  <table style="width:100%">
+    <thead><tr><th>Name</th><th>UTR</th><th>Status</th><th>Time</th></tr></thead>
+    <tbody>{rows if rows else '<tr><td colspan="4" class="empty">No records in DB yet</td></tr>'}</tbody>
+  </table>
+</div>
+<div style="margin-top:16px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px">
+  <div style="font-weight:600;margin-bottom:8px">⚠️ Agar DATABASE_URL ❌ NOT SET dikhe toh Railway mein set karo:</div>
+  <code style="color:var(--green);font-size:13px">DATABASE_URL = $&#123;&#123;Postgres.DATABASE_URL&#125;&#125;</code>
+</div>"""
+    return page("DB Status", content, "dashboard")
+
+
 @app.route("/")
 def root():
     if session.get("logged_in") and session.get("role") == "admin":
