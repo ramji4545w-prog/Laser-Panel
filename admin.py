@@ -889,7 +889,7 @@ def registrations():
 @admin_only
 def chats():
     users_list = db.execute("""
-        SELECT telegram_id, user_name,
+        SELECT telegram_id, MAX(user_name) as user_name,
                COUNT(*) as msg_count,
                MAX(created_at) as last_time,
                MAX(CASE WHEN sender='customer' THEN message END) as last_msg
