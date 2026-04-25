@@ -19,7 +19,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
 )
 
-from db import db
+from db import db, cache_log
 
 TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
@@ -42,6 +42,9 @@ def get_upi():
 
 
 def log_chat(telegram_id: int, user_name: str, sender: str, message: str):
+    # Always save to in-memory cache immediately (no DB needed)
+    cache_log(telegram_id, user_name, sender, message)
+    # Also try DB in background
     def _save():
         try:
             db.execute(
@@ -50,7 +53,7 @@ def log_chat(telegram_id: int, user_name: str, sender: str, message: str):
             )
             db.commit()
         except Exception as e:
-            print(f"⚠️ log_chat failed tid={telegram_id} sender={sender}: {e}")
+            print(f"⚠️ log_chat DB failed tid={telegram_id}: {e}")
     threading.Thread(target=_save, daemon=True).start()
 
 
