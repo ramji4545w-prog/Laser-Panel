@@ -29,7 +29,9 @@ SITES = [
 ]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH  = os.path.join(BASE_DIR, "database.db")
+# Use Railway persistent volume at /data if available, else local
+_DATA_DIR = "/data" if os.path.isdir("/data") else BASE_DIR
+DB_PATH   = os.path.join(_DATA_DIR, "database.db")
 
 db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
 db.row_factory = sqlite3.Row
