@@ -1,10 +1,11 @@
 import os
-import sqlite3
 import requests
 from datetime import date
 from functools import wraps
 from flask import (Flask, render_template_string, request,
                    redirect, url_for, session, jsonify, flash)
+
+from db import db   # shared persistent database (PostgreSQL or SQLite)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "laser-panel-secret-2024")
@@ -14,48 +15,6 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 DEFAULT_UPI   = os.environ.get("UPI_ID", "")
 ADMIN_PASS    = os.environ.get("ADMIN_PASSWORD") or "Laser@2024"
 SITE_NAME     = "Laser Panel"
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Use Railway persistent volume at /data if available, else local
-_DATA_DIR = "/data" if os.path.isdir("/data") else BASE_DIR
-DB_PATH   = os.path.join(_DATA_DIR, "database.db")
-
-# ── Database ──────────────────────────────────────────
-db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
-db.row_factory = sqlite3.Row
-db.execute("PRAGMA journal_mode=WAL")
-db.execute("PRAGMA synchronous=NORMAL")
-db.execute("PRAGMA cache_size=-20000")
-db.execute("PRAGMA temp_store=MEMORY")
-
-db.execute("""CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER, name TEXT, phone TEXT,
-    site TEXT, id_type TEXT, amount TEXT, utr TEXT,
-    id_pass TEXT, status TEXT DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-db.execute("""CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY, upi TEXT)""")
-db.execute("""CREATE TABLE IF NOT EXISTS subadmins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE, password TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-db.execute("INSERT OR IGNORE INTO settings (id,upi) VALUES (1,?)", (DEFAULT_UPI,))
-for col in ["id_pass TEXT","id_type TEXT","utr TEXT","phone TEXT","site TEXT"]:
-    try: db.execute(f"ALTER TABLE users ADD COLUMN {col}")
-    except: pass
-db.execute("""CREATE TABLE IF NOT EXISTS chat_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER,
-    user_name TEXT,
-    sender TEXT,
-    message TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
-db.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
-db.execute("CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at)")
-db.execute("CREATE INDEX IF NOT EXISTS idx_users_tgid ON users(telegram_id)")
-db.execute("CREATE INDEX IF NOT EXISTS idx_chat_tgid ON chat_logs(telegram_id)")
-db.commit()
 
 
 def get_upi():
