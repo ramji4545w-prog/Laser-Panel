@@ -6,7 +6,7 @@ from flask import (Flask, render_template_string, request,
                    redirect, url_for, session, jsonify, flash)
 from flask_compress import Compress
 
-from db import db   # shared persistent database (PostgreSQL or SQLite)
+from db import db, CHAT_CACHE, cache_log, _CACHE_LOCK   # shared DB + in-memory chat cache
 
 app = Flask(__name__)
 
@@ -1043,72 +1043,99 @@ def registrations():
 
 # ══════════════════════════════════════════════════════
 #  CHATS — Customer chat history + manual message
+#  Primary source: in-memory CHAT_CACHE (always works)
+#  Fallback: DB chat_logs + users table
 # ══════════════════════════════════════════════════════
+
+def _build_chat_list():
+    """Merge CHAT_CACHE + DB + users table → unified list sorted by last activity."""
+    merged = {}   # {str(tid): {user_name, msg_count, last_msg, last_time, from_cache}}
+
+    # 1. In-memory cache (most fresh, always available)
+    with _CACHE_LOCK:
+        cache_copy = dict(CHAT_CACHE)
+    for tid_s, data in cache_copy.items():
+        msgs = data.get("messages", [])
+        cust_msgs = [m["message"] for m in msgs if m["sender"] == "customer"]
+        merged[tid_s] = {
+            "user_name":  data.get("user_name", "Unknown"),
+            "msg_count":  len(msgs),
+            "last_msg":   cust_msgs[-1][:60] if cust_msgs else (msgs[-1]["message"][:60] if msgs else ""),
+            "last_time":  msgs[-1]["ts"] if msgs else "",
+            "from_cache": True,
+        }
+
+    # 2. DB chat_logs (may have older history)
+    try:
+        db_rows = db.execute("""
+            SELECT telegram_id, MAX(user_name) AS uname, COUNT(*) AS cnt,
+                   MAX(CASE WHEN sender='customer' THEN message END) AS last_cust
+            FROM chat_logs GROUP BY telegram_id ORDER BY MAX(created_at) DESC LIMIT 200
+        """).fetchall()
+        for r in db_rows:
+            tid_s = str(r["telegram_id"])
+            if tid_s not in merged:
+                merged[tid_s] = {
+                    "user_name": r["uname"] or "Unknown",
+                    "msg_count": r["cnt"],
+                    "last_msg":  (r["last_cust"] or "")[:60],
+                    "last_time": "",
+                    "from_cache": False,
+                }
+    except Exception:
+        pass
+
+    # 3. Payment users (customers who talked to bot)
+    try:
+        pay_rows = db.execute(
+            "SELECT telegram_id, name FROM users ORDER BY id DESC LIMIT 200"
+        ).fetchall()
+        for r in pay_rows:
+            tid_s = str(r["telegram_id"])
+            if tid_s not in merged:
+                merged[tid_s] = {
+                    "user_name": r["name"] or "Unknown",
+                    "msg_count": 0,
+                    "last_msg":  "💰 Payment request",
+                    "last_time": "",
+                    "from_cache": False,
+                }
+            elif not merged[tid_s]["user_name"] or merged[tid_s]["user_name"] == "Unknown":
+                merged[tid_s]["user_name"] = r["name"] or merged[tid_s]["user_name"]
+    except Exception:
+        pass
+
+    return merged
+
 
 @app.route("/admin/chats")
 @admin_only
 def chats():
-    # Chat logs se customers
-    chat_users = db.execute("""
-        SELECT telegram_id,
-               MAX(user_name)  AS user_name,
-               COUNT(*)        AS msg_count,
-               MAX(created_at) AS last_time,
-               MAX(CASE WHEN sender='customer' THEN message ELSE NULL END) AS last_customer_msg
-        FROM chat_logs
-        GROUP BY telegram_id
-        ORDER BY last_time DESC
-        LIMIT 100
-    """).fetchall()
-
-    # Users table se bhi customers lao (jo chat_logs mein nahi hain)
-    chat_tids = {str(u["telegram_id"]) for u in chat_users}
-    pay_users = db.execute(
-        "SELECT telegram_id, name, created_at FROM users ORDER BY id DESC LIMIT 200"
-    ).fetchall()
-
-    # Merge: sirf wahi add karo jo chat_logs mein nahi hain
-    extra_rows = []
-    seen = set(chat_tids)
-    for u in pay_users:
-        tid = str(u["telegram_id"])
-        if tid not in seen:
-            seen.add(tid)
-            extra_rows.append({
-                "telegram_id": u["telegram_id"],
-                "user_name":   u["name"] or "Unknown",
-                "msg_count":   0,
-                "last_time":   u["created_at"],
-                "last_customer_msg": "💰 Payment request (no chat log)",
-            })
-
-    # Combine — chat_users first (they have logs), then extras
-    users_list = list(chat_users) + extra_rows
+    merged = _build_chat_list()
 
     rows_html = ""
-    for u in users_list:
-        tid  = u["telegram_id"]
-        name = u["user_name"] or "Unknown"
-        cnt  = u["msg_count"]
-        t    = fmt_dt(u["last_time"])
-        last = (u["last_customer_msg"] or "")[:50]
+    for tid_s, data in merged.items():
+        name  = data["user_name"] or "Unknown"
+        cnt   = data["msg_count"]
+        last  = data["last_msg"] or "—"
+        t     = data["last_time"]
+        live  = "🟢 " if data["from_cache"] else ""
         rows_html += f"""
-        <a href="/admin/chats/{tid}" style="text-decoration:none">
-        <div class="chat-row">
-          <div class="chat-avatar">{name[0].upper() if name else "?"}</div>
-          <div class="chat-info">
-            <div class="chat-name">{name}
-              <span style="font-size:11px;color:var(--muted);margin-left:6px">ID: {tid}</span>
-            </div>
-            <div class="chat-last">{last or "—"}</div>
-          </div>
-          <div class="chat-meta">
-            <div class="chat-time">{t}</div>
-            <div class="chat-badge">{cnt} msgs</div>
-          </div>
-        </div></a>"""
+<a href="/admin/chats/{tid_s}" style="text-decoration:none">
+<div class="chat-row">
+  <div class="chat-avatar">{name[0].upper() if name else "?"}</div>
+  <div class="chat-info">
+    <div class="chat-name">{live}{name}
+      <span style="font-size:11px;color:var(--muted);margin-left:6px">ID: {tid_s}</span>
+    </div>
+    <div class="chat-last">{last}</div>
+  </div>
+  <div class="chat-meta">
+    <div class="chat-time">{t}</div>
+    <div class="chat-badge">{cnt} msgs</div>
+  </div>
+</div></a>"""
 
-    # Direct message form (send to any Telegram ID)
     dm_form = """
 <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
   padding:18px;margin-bottom:22px">
@@ -1130,10 +1157,14 @@ def chats():
   </form>
 </div>"""
 
-    empty = '<div style="text-align:center;color:var(--muted);padding:60px 20px">'\
-            '<div style="font-size:40px;margin-bottom:12px">💬</div>'\
-            '<div>Abhi koi chat nahi hai.<br>'\
-            '<span style="font-size:13px">Jab customer /start karega toh yahan dikhega.</span></div></div>'
+    empty = """<div style="text-align:center;color:var(--muted);padding:60px 20px">
+<div style="font-size:40px;margin-bottom:12px">💬</div>
+<div>Abhi koi chat nahi hai.<br>
+<span style="font-size:13px">Jab customer bot pe /start karega, yahan turant dikhega.</span>
+</div></div>"""
+
+    total = len(merged)
+    live_cnt = sum(1 for d in merged.values() if d["from_cache"])
 
     content = f"""
 <style>
@@ -1141,23 +1172,27 @@ def chats():
   border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer;transition:.2s}}
 .chat-row:hover{{border-color:var(--blue);background:#0f1830}}
 .chat-avatar{{width:46px;height:46px;border-radius:50%;background:var(--blue2);
-  display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0}}
+  display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;
+  color:#fff;flex-shrink:0;text-transform:uppercase}}
 .chat-info{{flex:1;min-width:0}}
 .chat-name{{font-weight:600;font-size:15px;color:var(--text)}}
-.chat-last{{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}}
+.chat-last{{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;margin-top:3px;max-width:300px}}
 .chat-meta{{text-align:right;flex-shrink:0}}
 .chat-time{{font-size:12px;color:var(--muted)}}
-.chat-badge{{background:var(--blue);color:#fff;border-radius:12px;font-size:11px;padding:2px 8px;margin-top:4px;display:inline-block}}
+.chat-badge{{background:var(--blue);color:#fff;border-radius:12px;font-size:11px;
+  padding:2px 8px;margin-top:4px;display:inline-block}}
 </style>
 <div class="topbar">
   <div class="page-title">Chats <span>— Customer Messages</span></div>
-  <div class="topbar-right">
-    <span style="color:var(--muted);font-size:13px">{len(users_list)} customers</span>
+  <div class="topbar-right" style="display:flex;gap:10px;align-items:center">
+    <span style="color:var(--green);font-size:13px">🟢 {live_cnt} live</span>
+    <span style="color:var(--muted);font-size:13px">{total} total</span>
   </div>
 </div>
 {dm_form}
 {rows_html if rows_html else empty}
-<script>setTimeout(function(){{location.reload()}}, 30000);</script>"""
+<script>setTimeout(function(){{location.reload()}}, 15000);</script>"""
     return page("Chats", content, "chats")
 
 
@@ -1174,109 +1209,127 @@ def chats_send_direct():
     except ValueError:
         flash("⚠️ Sahi Telegram ID daalo (sirf numbers).", "error")
         return redirect(url_for("chats"))
-
     send_tg(cid, msg)
+    cache_log(cid, "Direct", "bot", f"[Admin] {msg}")
     try:
-        db.execute(
-            "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
-            (cid, "Direct", "bot", f"[Admin] {msg}")
-        )
+        db.execute("INSERT INTO chat_logs (telegram_id,user_name,sender,message) VALUES (?,?,?,?)",
+                   (cid, "Direct", "bot", f"[Admin] {msg}"))
         db.commit()
-    except Exception:
-        pass
+    except Exception: pass
     flash(f"✅ Message bhej diya — ID: {cid}", "success")
     return redirect(url_for("chats"))
 
 
-@app.route("/admin/chats/<int:tid>")
+@app.route("/admin/chats/<tid>")
 @admin_only
 def chat_detail(tid):
-    # One combined query for logs + user info
-    logs     = db.execute(
-        "SELECT sender, message, created_at FROM chat_logs WHERE telegram_id=? ORDER BY id ASC",
-        (tid,)).fetchall()
-    user_row = db.execute(
-        "SELECT name,phone,site,amount,status,utr FROM users WHERE telegram_id=? ORDER BY id DESC LIMIT 1",
-        (tid,)).fetchone()
-    first    = db.execute(
-        "SELECT user_name FROM chat_logs WHERE telegram_id=? LIMIT 1", (tid,)).fetchone()
-    user_name = (first["user_name"] if first else None) or "Unknown"
+    try:
+        tid_int = int(tid)
+    except ValueError:
+        return redirect(url_for("chats"))
 
-    phone  = user_row["phone"]  if user_row else "—"
-    site   = user_row["site"]   if user_row else "—"
-    amount = user_row["amount"] if user_row else "—"
-    status = user_row["status"] if user_row else "—"
-    utr    = user_row["utr"]    if user_row else "—"
+    # ── Messages: cache first, then DB ──────────────────────────────────────
+    messages = []
+    user_name = "Unknown"
+
+    with _CACHE_LOCK:
+        cached = CHAT_CACHE.get(str(tid_int), {})
+    if cached:
+        user_name = cached.get("user_name", "Unknown")
+        for m in cached.get("messages", []):
+            messages.append({"sender": m["sender"], "message": m["message"], "ts": m["ts"]})
+
+    if not messages:
+        try:
+            db_logs = db.execute(
+                "SELECT sender,message,created_at FROM chat_logs WHERE telegram_id=? ORDER BY id ASC",
+                (tid_int,)).fetchall()
+            for r in db_logs:
+                messages.append({"sender": r["sender"], "message": r["message"],
+                                  "ts": fmt_dt(r["created_at"], "time")})
+            if db_logs:
+                first = db.execute("SELECT user_name FROM chat_logs WHERE telegram_id=? LIMIT 1",
+                                    (tid_int,)).fetchone()
+                user_name = (first["user_name"] if first else None) or "Unknown"
+        except Exception: pass
+
+    # ── Payment info from users table ────────────────────────────────────────
+    phone = site = amount = status = utr = "—"
+    try:
+        row = db.execute(
+            "SELECT name,phone,site,amount,status,utr FROM users WHERE telegram_id=? ORDER BY id DESC LIMIT 1",
+            (tid_int,)).fetchone()
+        if row:
+            if row["name"] and user_name == "Unknown": user_name = row["name"]
+            phone  = row["phone"]  or "—"
+            site   = row["site"]   or "—"
+            amount = row["amount"] or "—"
+            status = row["status"] or "—"
+            utr    = row["utr"]    or "—"
+    except Exception: pass
 
     info_card = f"""
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
-  <div class="card" style="flex:1;min-width:120px;padding:12px">
+  <div class="card" style="flex:1;min-width:100px;padding:12px">
     <div style="color:var(--muted);font-size:10px">📱 PHONE</div>
     <div style="font-weight:700;font-size:14px;margin-top:4px">{phone}</div>
   </div>
-  <div class="card" style="flex:1;min-width:120px;padding:12px">
+  <div class="card" style="flex:1;min-width:100px;padding:12px">
     <div style="color:var(--muted);font-size:10px">🌐 SITE</div>
     <div style="font-weight:700;font-size:14px;margin-top:4px">{site}</div>
   </div>
-  <div class="card" style="flex:1;min-width:120px;padding:12px">
+  <div class="card" style="flex:1;min-width:100px;padding:12px">
     <div style="color:var(--muted);font-size:10px">💰 AMOUNT</div>
     <div style="font-weight:700;font-size:14px;margin-top:4px;color:var(--green)">₹{amount}</div>
   </div>
-  <div class="card" style="flex:1;min-width:120px;padding:12px">
-    <div style="color:var(--muted);font-size:10px">🔢 UTR</div>
-    <div style="font-weight:700;font-size:13px;margin-top:4px">{utr}</div>
-  </div>
-  <div class="card" style="flex:1;min-width:120px;padding:12px">
+  <div class="card" style="flex:1;min-width:100px;padding:12px">
     <div style="color:var(--muted);font-size:10px">📊 STATUS</div>
     <div style="font-weight:700;font-size:14px;margin-top:4px">{(status or "—").upper()}</div>
   </div>
-</div>"""
-
-    bubbles = ""
-    for log in logs:
-        is_cust = log["sender"] == "customer"
-        t   = fmt_dt(log["created_at"])
-        msg = str(log["message"] or "").replace("<","&lt;").replace(">","&gt;")
-        if is_cust:
-            bubbles += f"""
-<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
-  <div style="max-width:75%;background:#1e40af;color:#fff;padding:10px 14px;
-    border-radius:16px 16px 4px 16px;font-size:14px;word-break:break-word">
-    {msg}
-    <div style="font-size:10px;color:rgba(255,255,255,.55);margin-top:4px;text-align:right">{t}</div>
+  <div class="card" style="flex:1;min-width:120px;padding:12px">
+    <div style="color:var(--muted);font-size:10px">🔢 UTR</div>
+    <div style="font-size:12px;margin-top:4px">{utr}</div>
   </div>
 </div>"""
+
+    def _bubble(sender, msg, ts):
+        msg = str(msg or "").replace("<","&lt;").replace(">","&gt;")
+        if sender == "customer":
+            return f"""<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+  <div style="max-width:75%;background:#1e40af;color:#fff;padding:10px 14px;
+    border-radius:16px 16px 4px 16px;font-size:14px;word-break:break-word">
+    {msg}<div style="font-size:10px;color:rgba(255,255,255,.5);margin-top:4px;text-align:right">{ts}</div>
+  </div></div>"""
         else:
-            label = "🤖 Bot" if not msg.startswith("[Admin]") else "👤 Admin"
+            label = "👤 Admin" if msg.startswith("[Admin]") else "🤖 Bot"
             clean = msg.replace("[Admin] ","")
-            bubbles += f"""
-<div style="display:flex;justify-content:flex-start;margin-bottom:8px">
+            return f"""<div style="display:flex;justify-content:flex-start;margin-bottom:8px">
   <div style="max-width:75%;background:var(--card);border:1px solid var(--border);
     color:var(--text);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:14px;word-break:break-word">
     <span style="font-size:11px;color:var(--muted)">{label}</span><br>{clean}
-    <div style="font-size:10px;color:var(--muted);margin-top:4px">{t}</div>
-  </div>
-</div>"""
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">{ts}</div>
+  </div></div>"""
 
-    empty = '<div style="text-align:center;color:var(--muted);padding:40px">Koi message nahi mila</div>'
+    bubbles = "".join(_bubble(m["sender"], m["message"], m["ts"]) for m in messages)
+    empty   = '<div style="text-align:center;color:var(--muted);padding:40px">Koi message nahi — abhi shuru hoga</div>'
 
     content = f"""
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
   <a href="/admin/chats" class="btn btn-ghost btn-sm">← Back</a>
   <div class="page-title" style="margin:0">{user_name}
-    <span style="font-size:13px;color:var(--muted);margin-left:6px">ID: {tid}</span>
+    <span style="font-size:13px;color:var(--muted);margin-left:6px">ID: {tid_int}</span>
   </div>
 </div>
 {info_card}
 <div style="max-width:740px;margin:0 auto">
   <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
-    padding:16px 20px;max-height:500px;overflow-y:auto" id="cb">
+    padding:16px 20px;max-height:520px;overflow-y:auto" id="cb">
     {bubbles if bubbles else empty}
   </div>
-  <form method="POST" action="/admin/chats/{tid}/reply"
+  <form method="POST" action="/admin/chats/{tid_int}/reply"
     style="display:flex;gap:10px;margin-top:14px;align-items:flex-end">
     <textarea name="msg" rows="2" id="reply-box"
-      placeholder="Customer ko reply likhein... (Enter bhejta hai)"
+      placeholder="Customer ko reply likhein... (Enter = Send, Shift+Enter = new line)"
       style="flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);
         border-radius:10px;padding:10px 14px;font-size:14px;resize:none;font-family:inherit"></textarea>
     <button type="submit" class="btn btn-primary" style="height:44px;padding:0 22px">
@@ -1286,13 +1339,11 @@ def chat_detail(tid):
 </div>
 <script>
   var cb=document.getElementById('cb');
-  if(cb) cb.scrollTop=cb.scrollHeight;
-  // Ctrl+Enter or just Enter to send
+  if(cb)cb.scrollTop=cb.scrollHeight;
   document.getElementById('reply-box').addEventListener('keydown',function(e){{
-    if(e.key==='Enter' && !e.shiftKey){{e.preventDefault();this.form.submit();}}
+    if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();this.form.submit();}}
   }});
-  // Auto-refresh every 20 seconds
-  setTimeout(function(){{location.reload()}}, 20000);
+  setTimeout(function(){{location.reload()}},15000);
 </script>"""
     return page(f"Chat — {user_name}", content, "chats")
 
@@ -1305,14 +1356,12 @@ def chat_reply(tid):
         flash("⚠️ Kuch likhein pehle!", "error")
         return redirect(f"/admin/chats/{tid}")
     send_tg(tid, f"💬 *Admin:* {msg}")
+    cache_log(tid, "Admin", "bot", f"[Admin] {msg}")
     try:
-        db.execute(
-            "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
-            (tid, "Admin", "bot", f"[Admin] {msg}")
-        )
+        db.execute("INSERT INTO chat_logs (telegram_id,user_name,sender,message) VALUES (?,?,?,?)",
+                   (tid, "Admin", "bot", f"[Admin] {msg}"))
         db.commit()
-    except Exception:
-        pass
+    except Exception: pass
     flash("✅ Message bhej diya!", "success")
     return redirect(f"/admin/chats/{tid}")
 
