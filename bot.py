@@ -360,7 +360,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data.clear()
 
-        # ── STEP 1: Customer ko message bhejo — DB se pehle ─────────────────
+        # ── STEP 1: DB mein TURANT save karo (synchronous) ──────────────────
+        saved = db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id)
+        if not saved:
+            # Agar sync fail hua toh background mein retry karo
+            def _retry():
+                for _ in range(5):
+                    time.sleep(2)
+                    if db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id):
+                        print(f"✅ BG retry save OK — tid={tid} utr={utr}")
+                        return
+                print(f"❌ All retries failed — tid={tid} utr={utr}")
+            threading.Thread(target=_retry, daemon=True).start()
+
+        # ── STEP 2: Customer ko confirmation message bhejo ───────────────────
         await update.message.reply_text(
             f"✅ *UTR Receive Ho Gaya Sir!*\n\n"
             f"Dear *{name}* Sir,\n\n"
@@ -370,7 +383,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-        # ── STEP 2: Admin ko notify karo via Telegram ───────────────────────
+        # ── STEP 3: Admin ko notify karo via Telegram ───────────────────────
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -385,19 +398,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🆔 Type: {id_type.upper()}\n"
                     f"🤖 Chat ID: `{tid}`\n"
                     f"{'─'*28}\n"
-                    f"Panel → Payments mein Accept/Decline karein"
+                    f"✅ Panel mein dikha: {'HAA' if saved else 'NAHI (retry ho raha hai)'}"
                 ),
                 parse_mode="Markdown",
             )
         except Exception as e:
             print(f"Admin notify error: {e}")
-
-        # ── STEP 3: DB mein save karo background mein ───────────────────────
-        def _bg_save():
-            ok = db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id)
-            if not ok:
-                print(f"⚠️ BG save failed — tid={tid} utr={utr}. Manual check needed.")
-        threading.Thread(target=_bg_save, daemon=True).start()
 
         log_chat(tid, name, "bot", f"✅ UTR {utr} submit — {site} ₹{amount}")
 
