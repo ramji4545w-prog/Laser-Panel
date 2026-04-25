@@ -62,19 +62,24 @@ def get_upi():
 
 
 def save_upi_permanent(new_upi: str) -> bool:
-    """DB update + Railway env var update (survives redeploy)"""
+    """DB update + Railway env var update (survives redeploy).
+    Railway auto-provides PROJECT_ID, ENVIRONMENT_ID, SERVICE_ID.
+    User only needs to add RAILWAY_TOKEN in Railway Variables."""
     # 1. Update local DB immediately
     db.execute("UPDATE settings SET upi=? WHERE id=1", (new_upi,))
     db.commit()
 
-    # 2. Also update Railway env var so it persists after redeploy
+    # 2. Update Railway env var — only RAILWAY_TOKEN needed from user
     token   = os.environ.get("RAILWAY_TOKEN", "")
     proj_id = os.environ.get("RAILWAY_PROJECT_ID", "")
     env_id  = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
     svc_id  = os.environ.get("RAILWAY_SERVICE_ID", "")
 
-    if not all([token, proj_id, env_id, svc_id]):
-        return False  # Railway API not configured — DB only
+    if not token:
+        return False  # No token — DB only
+
+    if not all([proj_id, env_id, svc_id]):
+        return False  # Not running on Railway
 
     query = """
     mutation variableUpsert($input: VariableUpsertInput!) {
@@ -1193,12 +1198,8 @@ def settings():
     flashes = get_flashes()
     current_upi = get_upi()
 
-    railway_ready = all([
-        os.environ.get("RAILWAY_TOKEN"),
-        os.environ.get("RAILWAY_PROJECT_ID"),
-        os.environ.get("RAILWAY_ENVIRONMENT_ID"),
-        os.environ.get("RAILWAY_SERVICE_ID"),
-    ])
+    # Only RAILWAY_TOKEN needed — rest are auto-set by Railway
+    railway_ready = bool(os.environ.get("RAILWAY_TOKEN"))
 
     if request.method == "POST":
         new_upi = request.form.get("upi","").strip()
