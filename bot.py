@@ -243,13 +243,18 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    step = context.user_data.get("step")
+    text  = update.message.text.strip()
+    step  = context.user_data.get("step")
+    tid   = update.effective_chat.id
+    uname = context.user_data.get("name") or (update.effective_user.full_name or "Unknown")
+
+    # Har customer message log karo
+    log_chat(tid, uname, "customer", text)
 
     if not step:
-        await update.message.reply_text(
-            "🙏 Sir, /start type karein aur shuru karein."
-        )
+        bot_msg = "🙏 Sir, /start type karein aur shuru karein."
+        await update.message.reply_text(bot_msg)
+        log_chat(tid, uname, "bot", bot_msg)
         return
 
     # ── Step 1: Naam ──
@@ -257,26 +262,31 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["name"] = text
         context.user_data["step"] = "phone"
         await forward_to_admin(update, context, f"Step: Naam diya → {text}")
+        bot_msg = f"✅ Shukriya {text} Sir! — Mobile number kya hai?"
         await update.message.reply_text(
             f"✅ Shukriya *{text}* Sir!\n\n"
             f"📱 Sir, aapka *mobile number* kya hai?",
             parse_mode="Markdown",
         )
+        log_chat(tid, text, "bot", bot_msg)
 
     # ── Step 2: Phone (validate) ──
     elif step == "phone":
         if not is_valid_phone(text):
+            bot_msg = "⚠️ Sahi mobile number bhejein — 10 digit Indian ya international"
             await update.message.reply_text(
                 "⚠️ Sir, *sahi mobile number* bhejein.\n\n"
                 "📱 Indian number: 10 digit (jaise: 9876543210)\n"
                 "🌍 International: + ke saath (jaise: +919876543210)",
                 parse_mode="Markdown",
             )
+            log_chat(tid, uname, "bot", bot_msg)
             return
 
         context.user_data["phone"] = text
         context.user_data["step"]  = "site"
         await forward_to_admin(update, context, f"Step: Phone diya → {text}")
+        bot_msg = "✅ Phone save! — Site select karein"
         site_lines = "\n".join(
             [f"{i+1}. [{n}]({u})" for i, (n, u) in enumerate(SITES)]
         )
@@ -293,6 +303,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(kb),
         )
+        log_chat(tid, uname, "bot", bot_msg)
 
     # ── Step 3: Amount → QR ──
     elif step == "amount":
@@ -300,7 +311,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"]   = "screenshot"
         upi     = get_upi()
         upi_url = f"upi://pay?pa={upi}&pn=LaserPanel&am={text}&cu=INR"
-        qr_path = os.path.join(BASE_DIR, f"qr_{update.effective_chat.id}.png")
+        qr_path = os.path.join(BASE_DIR, f"qr_{tid}.png")
         qrcode.make(upi_url).save(qr_path)
         with open(qr_path, "rb") as f:
             await update.message.reply_photo(
@@ -314,12 +325,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ),
                 parse_mode="Markdown",
             )
+        log_chat(tid, uname, "bot", f"💳 QR code bheja — UPI: {upi} | Amount: ₹{text} | Screenshot bhejein")
         try: os.remove(qr_path)
         except: pass
 
     # ── Step 4: UTR (validate 12 digits) ──
     elif step == "utr":
         if not is_valid_utr(text):
+            bot_msg = "⚠️ Sahi UTR bhejein — exactly 12 digit hona chahiye"
             await update.message.reply_text(
                 "⚠️ Sir, *sahi UTR number* bhejein.\n\n"
                 "🔢 UTR exactly *12 digit* ka hona chahiye.\n"
@@ -327,6 +340,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Bank app mein payment details mein milega Sir.",
                 parse_mode="Markdown",
             )
+            log_chat(tid, uname, "bot", bot_msg)
             return
 
         name          = context.user_data.get("name", "")
@@ -340,22 +354,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.execute("""INSERT INTO users
             (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
             VALUES (?,?,?,?,?,?,?,?,'pending')""",
-            (update.effective_chat.id, name, phone, site, id_type, amount, utr, screenshot_id))
+            (tid, name, phone, site, id_type, amount, utr, screenshot_id))
         db.commit()
         await forward_to_admin(update, context, f"✅ UTR Submit kiya → {utr} | Amount: ₹{amount} | Site: {site}")
         context.user_data.clear()
 
+        bot_msg = f"✅ Shukriya {name} Sir! — 2-5 min mein ID mil jayegi"
         await update.message.reply_text(
             f"✅ *Shukriya {name} Sir!*\n\n"
             f"⏳ Sir, please *2-5 minute wait karein.*\n"
             f"Aapki ID verify hote hi bhej di jayegi. 🙏",
             parse_mode="Markdown",
         )
+        log_chat(tid, name, "bot", bot_msg)
 
     else:
-        await update.message.reply_text(
-            "🙏 Sir, /start type karein aur shuru karein."
-        )
+        bot_msg = "🙏 Sir, /start type karein aur shuru karein."
+        await update.message.reply_text(bot_msg)
+        log_chat(tid, uname, "bot", bot_msg)
 
 
 # ════════════════════════════════════════
