@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import time
 import qrcode
 
 try:
@@ -16,7 +17,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
 )
 
-from db import db   # shared persistent database (PostgreSQL or SQLite)
+from db import db
 
 TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
@@ -31,12 +32,14 @@ SITES = [
 
 
 def get_upi():
-    r = db.execute("SELECT upi FROM settings WHERE id=1").fetchone()
-    return r["upi"] if r else DEFAULT_UPI
+    try:
+        r = db.execute("SELECT upi FROM settings WHERE id=1").fetchone()
+        return r["upi"] if r and r["upi"] else DEFAULT_UPI
+    except Exception:
+        return DEFAULT_UPI
 
 
 def log_chat(telegram_id: int, user_name: str, sender: str, message: str):
-    """Chat message database mein save karo"""
     try:
         db.execute(
             "INSERT INTO chat_logs (telegram_id, user_name, sender, message) VALUES (?,?,?,?)",
@@ -48,22 +51,17 @@ def log_chat(telegram_id: int, user_name: str, sender: str, message: str):
 
 
 def is_valid_phone(phone: str) -> bool:
-    """10 digit Indian ya international (+...) number accept karo"""
     phone = phone.strip().replace(" ", "").replace("-", "")
     if phone.startswith("+"):
-        # International: + ke baad 8-15 digits
         return re.fullmatch(r'\+\d{8,15}', phone) is not None
-    # Indian: exactly 10 digits
     return re.fullmatch(r'\d{10}', phone) is not None
 
 
 def is_valid_utr(utr: str) -> bool:
-    """Exactly 12 digits"""
     return re.fullmatch(r'\d{12}', utr.strip()) is not None
 
 
 def names_match(name1: str, name2: str) -> bool:
-    """Case-insensitive partial name match"""
     n1 = name1.strip().lower()
     n2 = name2.strip().lower()
     words1 = set(n1.split())
@@ -71,32 +69,22 @@ def names_match(name1: str, name2: str) -> bool:
     return bool(words1 & words2) or n1 in n2 or n2 in n1
 
 
-# ─── QR pe jo naam set hai usse screenshot mein dhundo ───
-PAYEE_NAME = "LaserPanel"   # pn= parameter in QR URL
+PAYEE_NAME = "LaserPanel"
+
 
 async def verify_screenshot_ocr(file_id: str, bot) -> bool:
-    """
-    Screenshot download karke OCR karo.
-    Return True agar payment valid lagti hai (PAYEE_NAME ya UPI ID mila),
-    False agar fake slip lag rahi hai.
-    OCR available nahi hai toh True return karo (block mat karo).
-    """
     if not OCR_AVAILABLE:
-        return True  # OCR nahi hai — screenshot valid maano
-
+        return True
     try:
-        file   = await bot.get_file(file_id)
-        buf    = io.BytesIO()
+        file = await bot.get_file(file_id)
+        buf  = io.BytesIO()
         await file.download_to_memory(out=buf)
         buf.seek(0)
-        img    = Image.open(buf)
-        text   = pytesseract.image_to_string(img).lower()
-
-        upi       = get_upi()
-        upi_local = upi.split("@")[0].lower() if "@" in upi else upi.lower()
-        payee_lower = PAYEE_NAME.lower()
-
-        if payee_lower in text or upi_local in text:
+        img  = Image.open(buf)
+        text = pytesseract.image_to_string(img).lower()
+        upi        = get_upi()
+        upi_local  = upi.split("@")[0].lower() if "@" in upi else upi.lower()
+        if PAYEE_NAME.lower() in text or upi_local in text:
             return True
         if len(upi_local) >= 4 and upi_local[:4] in text:
             return True
@@ -105,27 +93,54 @@ async def verify_screenshot_ocr(file_id: str, bot) -> bool:
         return True
 
 
+def db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id):
+    """DB mein payment request save karo — 3 baar retry."""
+    for attempt in range(3):
+        try:
+            db.execute(
+                """INSERT INTO users
+                   (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
+                   VALUES (?,?,?,?,?,?,?,?,'pending')""",
+                (tid, name, phone, site, id_type, amount, utr, screenshot_id)
+            )
+            db.commit()
+            db.backup_now()
+            return True
+        except Exception as e:
+            print(f"DB insert attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                time.sleep(1)
+    return False
+
+
 async def auto_decline(telegram_id: int, name: str, site: str, amount: str,
                        screenshot_id: str, phone: str, id_type: str, bot):
-    """Name mismatch par auto-decline karo"""
-    db.execute("""INSERT INTO users
-        (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
-        VALUES (?,?,?,?,?,?,?,?,'declined')""",
-        (telegram_id, name, phone, site, id_type, amount, "NAME_MISMATCH", screenshot_id))
-    db.commit()
-    db.backup_now()
+    try:
+        db.execute(
+            """INSERT INTO users
+               (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
+               VALUES (?,?,?,?,?,?,?,?,'declined')""",
+            (telegram_id, name, phone, site, id_type, amount, "NAME_MISMATCH", screenshot_id)
+        )
+        db.commit()
+        db.backup_now()
+    except Exception as e:
+        print(f"auto_decline DB error: {e}")
 
-    await bot.send_message(
-        chat_id=telegram_id,
-        text=(
-            f"❌ *Payment Decline Ho Gayi Sir*\n\n"
-            f"Dear *{name}* Sir,\n"
-            f"Aapke payment mein diya gaya naam aapke account se match nahi karta.\n\n"
-            f"For more information contact here 👉 https://wa.me/919520668248\n\n"
-            f"Dobara try karne ke liye /start karein 🙏"
-        ),
-        parse_mode="Markdown",
-    )
+    try:
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                f"❌ *Payment Decline Ho Gayi Sir*\n\n"
+                f"Dear *{name}* Sir,\n"
+                f"Aapke payment mein diya gaya naam aapke account se match nahi karta.\n\n"
+                f"For more information contact here 👉 https://wa.me/919520668248\n\n"
+                f"Dobara try karne ke liye /start karein 🙏"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        print(f"auto_decline message error: {e}")
 
 
 # ════════════════════════════════════════
@@ -134,22 +149,22 @@ async def auto_decline(telegram_id: int, name: str, site: str, amount: str,
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    user = update.effective_user
-    tid  = update.effective_chat.id
+    user  = update.effective_user
+    tid   = update.effective_chat.id
     uname = user.full_name or "Unknown"
     log_chat(tid, uname, "customer", "/start")
+
     kb = [
         [InlineKeyboardButton("🆕 New ID",  callback_data="type_new")],
         [InlineKeyboardButton("🎮 Demo ID", callback_data="type_demo")],
     ]
-    bot_msg = "🙏 Laser Panel mein aapka swagat hai Sir! — ID type select karein"
     await update.message.reply_text(
         "🙏 *Laser Panel mein aapka swagat hai Sir!*\n\n"
         "Sir, aap kaun si ID lena chahenge?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb),
     )
-    log_chat(tid, uname, "bot", bot_msg)
+    log_chat(tid, uname, "bot", "Welcome — ID type select karein")
 
 
 # ════════════════════════════════════════
@@ -160,6 +175,7 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q    = update.callback_query
     await q.answer()
     data = q.data
+    tid  = q.message.chat.id
 
     if data == "type_new":
         context.user_data.clear()
@@ -167,7 +183,8 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["step"]    = "name"
         await q.message.reply_text(
             "✅ *New ID select ki!*\n\n"
-            "Sir, aapka *poora naam* kya hai?",
+            "Sir, aapka *poora naam* kya hai?\n"
+            "_(Jaise aapke bank account mein hai)_",
             parse_mode="Markdown",
         )
 
@@ -203,7 +220,8 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(
             f"✅ *{name}* select ki!\n\n"
             f"Sir, aap *kitne amount se ID banana chahte hain?*\n"
-            f"_(₹ mein amount type karein, jaise: 500)_",
+            f"_(₹ mein amount type karein, jaise: 500)_\n"
+            f"_(Minimum ₹100)_",
             parse_mode="Markdown",
         )
 
@@ -218,7 +236,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid   = update.effective_chat.id
     uname = context.user_data.get("name") or (update.effective_user.full_name or "Unknown")
 
-    # Har customer message log karo
     log_chat(tid, uname, "customer", text)
 
     if not step:
@@ -227,23 +244,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_chat(tid, uname, "bot", bot_msg)
         return
 
-    # ── Step 1: Naam ──
+    # ── Step 1: Naam ──────────────────────────────────────────────────────────
     if step == "name":
         context.user_data["name"] = text
         context.user_data["step"] = "phone"
-        await forward_to_admin(update, context, f"Step: Naam diya → {text}")
+        await forward_to_admin(update, context, f"Step: Naam → {text}")
         bot_msg = f"✅ Shukriya {text} Sir! — Mobile number kya hai?"
         await update.message.reply_text(
             f"✅ Shukriya *{text}* Sir!\n\n"
-            f"📱 Sir, aapka *mobile number* kya hai?",
+            f"📱 Sir, aapka *mobile number* kya hai?\n"
+            f"_(10 digit Indian number ya +91 se shuru karein)_",
             parse_mode="Markdown",
         )
         log_chat(tid, text, "bot", bot_msg)
 
-    # ── Step 2: Phone (validate) ──
+    # ── Step 2: Phone ─────────────────────────────────────────────────────────
     elif step == "phone":
         if not is_valid_phone(text):
-            bot_msg = "⚠️ Sahi mobile number bhejein — 10 digit Indian ya international"
+            bot_msg = "⚠️ Sahi mobile number chahiye"
             await update.message.reply_text(
                 "⚠️ Sir, *sahi mobile number* bhejein.\n\n"
                 "📱 Indian number: 10 digit (jaise: 9876543210)\n"
@@ -255,8 +273,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["phone"] = text
         context.user_data["step"]  = "site"
-        await forward_to_admin(update, context, f"Step: Phone diya → {text}")
-        bot_msg = "✅ Phone save! — Site select karein"
+        await forward_to_admin(update, context, f"Step: Phone → {text}")
         site_lines = "\n".join(
             [f"{i+1}. [{n}]({u})" for i, (n, u) in enumerate(SITES)]
         )
@@ -273,15 +290,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(kb),
         )
-        log_chat(tid, uname, "bot", bot_msg)
+        log_chat(tid, uname, "bot", "Site selection bheja")
 
-    # ── Step 3: Amount → QR ──
+    # ── Step 3: Amount → QR ───────────────────────────────────────────────────
     elif step == "amount":
         if not text.isdigit() or int(text) < 100:
-            bot_msg = "⚠️ Sir, minimum ₹100 amount hona chahiye. Sahi amount type karein."
-            await update.message.reply_text(bot_msg, parse_mode="Markdown")
+            bot_msg = "⚠️ Minimum ₹100 amount chahiye"
+            await update.message.reply_text(
+                "⚠️ Sir, *minimum ₹100* amount hona chahiye.\n\n"
+                "Sahi amount type karein (jaise: 500)",
+                parse_mode="Markdown",
+            )
             log_chat(tid, uname, "bot", bot_msg)
             return
+
         context.user_data["amount"] = text
         context.user_data["step"]   = "screenshot"
         upi     = get_upi()
@@ -290,12 +312,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 *Payment Details Sir*\n\n"
             f"📲 UPI ID: `{upi}`\n"
             f"💰 Amount: ₹*{text}*\n\n"
-            f"Sir, QR scan karke ya UPI ID se payment karein.\n\n"
-            f"✅ Payment hone ke baad *screenshot bhejein Sir.*"
+            f"👉 QR scan karein ya UPI ID pe seedha payment karein.\n\n"
+            f"✅ *Payment karne ke baad screenshot bhejein Sir.*"
         )
         qr_sent = False
         try:
-            import io
             buf = io.BytesIO()
             qrcode.make(upi_url).save(buf, format="PNG")
             buf.seek(0)
@@ -305,17 +326,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"QR error: {e}")
         if not qr_sent:
             await update.message.reply_text(caption, parse_mode="Markdown")
-        log_chat(tid, uname, "bot", f"💳 Payment details bheja — UPI: {upi} | Amount: ₹{text} | Screenshot bhejein")
 
-    # ── Step 4: UTR (validate 12 digits) ──
+        log_chat(tid, uname, "bot", f"QR bheja — UPI: {upi} | Amount: ₹{text}")
+
+    # ── Step 4: UTR ───────────────────────────────────────────────────────────
     elif step == "utr":
         if not is_valid_utr(text):
-            bot_msg = "⚠️ Sahi UTR bhejein — exactly 12 digit hona chahiye"
+            bot_msg = "⚠️ UTR exactly 12 digit hona chahiye"
             await update.message.reply_text(
                 "⚠️ Sir, *sahi UTR number* bhejein.\n\n"
                 "🔢 UTR exactly *12 digit* ka hona chahiye.\n"
                 "_(Jaise: 123456789012)_\n\n"
-                "Bank app mein payment details mein milega Sir.",
+                "💡 Bank app → Payment History → Transaction ID",
                 parse_mode="Markdown",
             )
             log_chat(tid, uname, "bot", bot_msg)
@@ -329,40 +351,61 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot_id = context.user_data.get("screenshot_file_id", "")
         utr           = text
 
-        try:
-            db.execute("""INSERT INTO users
-                (telegram_id,name,phone,site,id_type,amount,utr,screenshot_file_id,status)
-                VALUES (?,?,?,?,?,?,?,?,'pending')""",
-                (tid, name, phone, site, id_type, amount, utr, screenshot_id))
-            db.commit()
-            db.backup_now()
-        except Exception as e:
-            print(f"DB insert error: {e}")
+        # DB mein save karo (3 retry ke saath)
+        saved = db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id)
+
+        if not saved:
             await update.message.reply_text(
-                "⚠️ *Server error aa gaya Sir.* Thodi der baad /start karke dobara try karein.",
+                "⚠️ *Technical problem aa gayi Sir.*\n\n"
+                "Aapka UTR note kar liya hai. Thodi der baad dobara try karein ya\n"
+                "seedha contact karein 👉 https://wa.me/919520668248",
                 parse_mode="Markdown",
             )
             return
 
+        # Admin ko notify karo
         try:
-            await forward_to_admin(update, context, f"✅ UTR Submit kiya → {utr} | Amount: ₹{amount} | Site: {site}")
+            await forward_to_admin(update, context,
+                f"✅ NEW PAYMENT REQUEST\n"
+                f"UTR: {utr} | Amount: ₹{amount} | Site: {site}")
         except Exception as e:
             print(f"Admin forward error: {e}")
 
         context.user_data.clear()
 
-        bot_msg = f"✅ UTR receive hua — payment check ho raha hai, 5 min wait karein"
+        # ── Customer ko saari messages bhejo ────────────────────────────────
         await update.message.reply_text(
-            f"✅ *Shukriya {name} Sir!*\n\n"
-            f"🔍 Aapka payment check ho raha hai.\n"
-            f"⏳ Please *5 minute wait karein Sir.*\n\n"
+            f"✅ *UTR Receive Ho Gaya Sir!*\n\n"
+            f"Dear *{name}* Sir,\n"
+            f"🔍 Aapka payment verify ho raha hai.\n"
+            f"⏳ Please *5 minute wait karein.*\n\n"
             f"ID verify hote hi turant bhej di jayegi. 🙏",
             parse_mode="Markdown",
         )
-        log_chat(tid, name, "bot", bot_msg)
 
+        await update.message.reply_text(
+            f"📋 *Aapki Payment Details:*\n\n"
+            f"🌐 Site: *{site}*\n"
+            f"💰 Amount: ₹*{amount}*\n"
+            f"🔢 UTR: `{utr}`\n\n"
+            f"_Yeh details apne paas save kar lein Sir._",
+            parse_mode="Markdown",
+        )
+
+        await update.message.reply_text(
+            "🔴✨ *LASER247 OFFICIAL SERVICE* ✨🔴\n\n"
+            "⚡ Fast • Secure • Trusted\n\n"
+            "📞 *Koi bhi problem ho toh contact karein:*\n"
+            "👉 https://wa.me/919520668248\n\n"
+            "🕐 24×7 Available | तुरंत जवाब",
+            parse_mode="Markdown",
+        )
+
+        log_chat(tid, name, "bot", f"✅ UTR submit — payment verify pending | {site} | ₹{amount}")
+
+    # ── Screenshot step pe text aaya ──────────────────────────────────────────
     elif step == "screenshot":
-        bot_msg = "📸 Sir, please payment ka *screenshot bhejein* (photo) — text nahi."
+        bot_msg = "📸 Sir, payment ka *screenshot bhejein* (photo) — text nahi."
         await update.message.reply_text(bot_msg, parse_mode="Markdown")
         log_chat(tid, uname, "bot", bot_msg)
 
@@ -377,14 +420,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    step = context.user_data.get("step")
-    tid  = update.effective_chat.id
+    step  = context.user_data.get("step")
+    tid   = update.effective_chat.id
     uname = context.user_data.get("name") or (update.effective_user.full_name or "Unknown")
 
     if step == "screenshot":
         file_id = update.message.photo[-1].file_id
 
-        # ── OCR: screenshot check karo ──
         checking_msg = None
         try:
             checking_msg = await update.message.reply_text(
@@ -397,7 +439,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             is_valid = await verify_screenshot_ocr(file_id, context.bot)
         except Exception:
-            is_valid = True  # OCR fail hone pe block mat karo
+            is_valid = True
 
         try:
             if checking_msg:
@@ -423,10 +465,11 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ *Screenshot verify ho gayi Sir!*\n\n"
             "🔢 Sir, ab apna *UTR number* type karein.\n"
-            "_(Payment ke baad milne wala 12 digit ka number)_",
+            "_(Payment ke baad milne wala 12 digit ka number)_\n\n"
+            "💡 Bank app → Payment History → Transaction ID",
             parse_mode="Markdown",
         )
-        log_chat(tid, uname, "bot", "Screenshot verify ho gayi — UTR maanga")
+        log_chat(tid, uname, "bot", "Screenshot OK — UTR maanga")
 
     elif step == "utr":
         await update.message.reply_text(
@@ -445,40 +488,32 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ════════════════════════════════════════
 
 async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, extra: str = ""):
-    """Customer ka message admin ko forward karo"""
     try:
         user     = update.effective_user
         chat_id  = update.effective_chat.id
         name     = user.full_name or "Unknown"
         username = f"@{user.username}" if user.username else "no username"
-
-        header = (
-            f"👤 *Customer Message*\n"
-            f"Name: {name} ({username})\n"
-            f"Chat ID: `{chat_id}`\n"
+        header   = (
+            f"👤 *Customer:* {name} ({username})\n"
+            f"🆔 Chat ID: `{chat_id}`\n"
             f"_{extra}_\n"
             f"{'─'*25}"
         )
         await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=header,
-            parse_mode="Markdown"
+            chat_id=ADMIN_CHAT_ID, text=header, parse_mode="Markdown"
         )
-        # Original message forward
         await update.message.forward(chat_id=ADMIN_CHAT_ID)
-    except Exception:
-        pass  # Admin forward fail hua to customer flow mat rokho
+    except Exception as e:
+        print(f"forward_to_admin error: {e}")
 
 
 # ════════════════════════════════════════
-#  /reply COMMAND — Admin customer ko reply de
+#  /reply COMMAND — Admin reply
 # ════════════════════════════════════════
 
 async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sirf admin use kar sakta hai: /reply <chat_id> <message>"""
     if update.effective_chat.id != ADMIN_CHAT_ID:
         return
-
     args = context.args
     if not args or len(args) < 2:
         await update.message.reply_text(
@@ -487,37 +522,36 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
-
     target_id = args[0]
     message   = " ".join(args[1:])
-
     try:
-        await context.bot.send_message(
-            chat_id=int(target_id),
-            text=f"💬 {message}"
-        )
+        await context.bot.send_message(chat_id=int(target_id), text=f"💬 {message}")
         await update.message.reply_text(f"✅ Message bhej diya `{target_id}` ko!", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
 
 # ════════════════════════════════════════
-#  MAIN
+#  GLOBAL ERROR HANDLER
 # ════════════════════════════════════════
 
 async def error_handler(update, context):
-    """Koi bhi unexpected error ho — user ko batao aur log karo."""
     print(f"Bot error: {context.error}")
     try:
         if update and update.effective_chat:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text="⚠️ *Kuch error aa gaya Sir.* /start karke dobara try karein.",
+                text="⚠️ *Kuch error aa gaya Sir.* /start karke dobara try karein.\n\n"
+                     "Problem ho toh: 👉 https://wa.me/919520668248",
                 parse_mode="Markdown"
             )
     except Exception:
         pass
 
+
+# ════════════════════════════════════════
+#  MAIN
+# ════════════════════════════════════════
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
