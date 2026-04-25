@@ -373,35 +373,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data.clear()
 
-        # ── Customer ko saari messages bhejo ────────────────────────────────
+        # ── Customer ko confirmation message bhejo ──────────────────────────
         await update.message.reply_text(
             f"✅ *UTR Receive Ho Gaya Sir!*\n\n"
-            f"Dear *{name}* Sir,\n"
-            f"🔍 Aapka payment verify ho raha hai.\n"
-            f"⏳ Please *5 minute wait karein.*\n\n"
-            f"ID verify hote hi turant bhej di jayegi. 🙏",
+            f"Dear *{name}* Sir,\n\n"
+            f"🔍 Aapka payment check ho raha hai.\n"
+            f"⏳ Okay Sir, *5 minute wait karein.*\n\n"
+            f"Payment verify hote hi turant ID bhej di jayegi. 🙏",
             parse_mode="Markdown",
         )
 
-        await update.message.reply_text(
-            f"📋 *Aapki Payment Details:*\n\n"
-            f"🌐 Site: *{site}*\n"
-            f"💰 Amount: ₹*{amount}*\n"
-            f"🔢 UTR: `{utr}`\n\n"
-            f"_Yeh details apne paas save kar lein Sir._",
-            parse_mode="Markdown",
-        )
-
-        await update.message.reply_text(
-            "🔴✨ *LASER247 OFFICIAL SERVICE* ✨🔴\n\n"
-            "⚡ Fast • Secure • Trusted\n\n"
-            "📞 *Koi bhi problem ho toh contact karein:*\n"
-            "👉 https://wa.me/919520668248\n\n"
-            "🕐 24×7 Available | तुरंत जवाब",
-            parse_mode="Markdown",
-        )
-
-        log_chat(tid, name, "bot", f"✅ UTR submit — payment verify pending | {site} | ₹{amount}")
+        log_chat(tid, name, "bot", f"✅ UTR submit — payment verify pending | {site} | ₹{amount} | UTR: {utr}")
 
     # ── Screenshot step pe text aaya ──────────────────────────────────────────
     elif step == "screenshot":
