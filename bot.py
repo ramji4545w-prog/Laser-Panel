@@ -19,7 +19,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes,
 )
 
-from db import db, cache_log
+from db import db, cache_log, cache_payment, update_payment_cache, PAYMENT_CACHE
 
 TOKEN         = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
@@ -101,7 +101,7 @@ async def verify_screenshot_ocr(file_id: str, bot) -> bool:
 
 
 def db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id):
-    """DB mein payment request save karo — 3 baar retry."""
+    """DB mein payment request save karo — 3 baar retry. Cache hamesha update hoti hai."""
     for attempt in range(3):
         try:
             db.execute(
@@ -112,14 +112,31 @@ def db_insert_user(tid, name, phone, site, id_type, amount, utr, screenshot_id):
             )
             db.commit()
             db.backup_now()
-            print(f"✅ DB insert OK — tid={tid} utr={utr} site={site} amount={amount}")
+            # DB row ID nikalo aur cache mein save karo
+            try:
+                if db.is_pg:
+                    row = db.execute(
+                        "SELECT id FROM users WHERE telegram_id=%s AND utr=%s ORDER BY id DESC LIMIT 1",
+                        (tid, utr)).fetchone()
+                else:
+                    row = db.execute("SELECT last_insert_rowid() AS id").fetchone()
+                cache_id = str(row["id"]) if row else f"c_{tid}_{int(time.time()*1000)}"
+            except Exception:
+                cache_id = f"c_{tid}_{int(time.time()*1000)}"
+            cache_payment(cache_id, tid, name, phone, site, id_type, amount, utr,
+                          screenshot_id=screenshot_id or "")
+            print(f"✅ DB insert OK — tid={tid} utr={utr} cache_id={cache_id}")
             return True
         except Exception as e:
             print(f"❌ DB insert attempt {attempt+1}/3 FAILED: {type(e).__name__}: {e}")
             print(traceback.format_exc())
             if attempt < 2:
                 time.sleep(1)
-    print(f"❌ DB insert GAVE UP after 3 attempts — tid={tid} utr={utr}")
+    # DB failed — cache mein save karo taaki admin panel mein to dikhe
+    cache_id = f"c_{tid}_{int(time.time()*1000)}"
+    cache_payment(cache_id, tid, name, phone, site, id_type, amount, utr,
+                  screenshot_id=screenshot_id or "")
+    print(f"❌ DB insert GAVE UP — cached as {cache_id} tid={tid} utr={utr}")
     return False
 
 
